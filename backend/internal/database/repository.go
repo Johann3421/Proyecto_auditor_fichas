@@ -3,9 +3,7 @@ package database
 import (
 	"context"
 	"fmt"
-	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/Johann3421/Proyecto_auditor_fichas/backend/internal/models"
 )
