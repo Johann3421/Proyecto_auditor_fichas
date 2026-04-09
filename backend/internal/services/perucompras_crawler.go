@@ -33,6 +33,8 @@ var targetCatalogKeywords = []string{
 	"IMPRESORAS",
 	"REPUESTOS Y ACCESORIOS DE OFICINA",
 	"UTILES DE ESCRITORIO",
+	"MOBILIARIO",
+	"EQUIPOS MULTIMEDIA",
 }
 
 // isTargetCatalog returns true when the agreement description matches any target keyword.
@@ -294,9 +296,10 @@ func parseProductCards(body, acuerdoCode, acuerdoDesc string) []models.Ficha {
 		return regexp.MustCompile(`data-` + name + `="([^"]*)"`)
 	}
 	reCatalogue := reAttr("catalogue")
-	reStatus := reAttr("status")
-	reFile := reAttr("file")
-	rePubDate := reAttr("published-date")
+	reCategory  := reAttr("category")
+	reStatus    := reAttr("status")
+	reFile      := reAttr("file")
+	rePubDate   := reAttr("published-date")
 
 	// Split into individual card sections
 	sections := strings.Split(body, `<div class="card">`)
@@ -332,6 +335,11 @@ func parseProductCards(body, acuerdoCode, acuerdoDesc string) []models.Ficha {
 			catalogue = html.UnescapeString(m[1])
 		}
 
+		category := ""
+		if m := reCategory.FindStringSubmatch(sec); len(m) >= 2 {
+			category = html.UnescapeString(m[1])
+		}
+
 		statusStr := "OFERTADA"
 		if m := reStatus.FindStringSubmatch(sec); len(m) >= 2 {
 			statusStr = strings.ToUpper(m[1])
@@ -353,6 +361,7 @@ func parseProductCards(body, acuerdoCode, acuerdoDesc string) []models.Ficha {
 
 		datosRaw := map[string]interface{}{
 			"catalogue":      catalogue,
+			"category":       category,
 			"acuerdo_desc":   acuerdoDesc,
 			"published_date": pubDate,
 			"status_raw":     statusStr,

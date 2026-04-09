@@ -73,9 +73,10 @@ func (r *Repository) queryDashboardData(ctx context.Context, f models.DashboardF
 		  AND ($1='' OR acuerdo ILIKE $1)
 		  AND ($2='' OR estado::TEXT = $2)
 		  AND ($3='' OR datos_raw->>'catalogue' ILIKE $3)
+		  AND ($4='' OR datos_raw->>'category' ILIKE $4)
 		GROUP BY COALESCE(datos_raw->>'catalogue', acuerdo)
 		ORDER BY ordenes DESC LIMIT 20`,
-		f.AcuerdoMarco, f.TipoCompra, f.Catalogo)
+		f.AcuerdoMarco, f.TipoCompra, f.Catalogo, f.Categoria)
 	if err != nil {
 		return nil, fmt.Errorf("catalogos query: %w", err)
 	}
@@ -161,6 +162,34 @@ func (r *Repository) queryDashboardData(ctx context.Context, f models.DashboardF
 	}
 	tRows.Close()
 
+	// ── top categorias (fichas per product sub-type) ─────────────────────────
+	topCatRows, err := r.pool.Query(ctx, `
+		SELECT COALESCE(datos_raw->>'category', datos_raw->>'catalogue') AS cat,
+		       COUNT(*)::INTEGER AS ordenes,
+		       0.0::FLOAT AS monto,
+		       ROUND(COUNT(*)*100.0/SUM(COUNT(*)) OVER(), 2) AS percent
+		FROM fichas
+		WHERE deleted_at IS NULL
+		  AND estado != 'eliminada'
+		  AND ($1='' OR acuerdo ILIKE $1)
+		  AND ($2='' OR estado::TEXT = $2)
+		  AND ($3='' OR datos_raw->>'catalogue' ILIKE $3)
+		GROUP BY COALESCE(datos_raw->>'category', datos_raw->>'catalogue')
+		ORDER BY ordenes DESC LIMIT 15`,
+		f.AcuerdoMarco, f.TipoCompra, f.Catalogo)
+	if err != nil {
+		return nil, fmt.Errorf("top_categorias query: %w", err)
+	}
+	defer topCatRows.Close()
+	for topCatRows.Next() {
+		var row models.CatalogoRow
+		if err := topCatRows.Scan(&row.Catalogo, &row.Ordenes, &row.Monto, &row.Percent); err != nil {
+			return nil, err
+		}
+		data.TopCategorias = append(data.TopCategorias, row)
+	}
+	topCatRows.Close()
+
 	// totals
 	_ = r.pool.QueryRow(ctx, `
 		SELECT COUNT(*)::INTEGER FROM fichas WHERE deleted_at IS NULL AND estado != 'eliminada'`,
@@ -178,9 +207,11 @@ func (r *Repository) queryDashboardData(ctx context.Context, f models.DashboardF
 		  ARRAY_AGG(DISTINCT datos_raw->>'catalogue' ORDER BY datos_raw->>'catalogue')
 		            FILTER (WHERE datos_raw->>'catalogue' IS NOT NULL),
 		  ARRAY_AGG(DISTINCT estado::TEXT ORDER BY estado::TEXT)
-		            FILTER (WHERE estado IS NOT NULL)
+	            FILTER (WHERE estado IS NOT NULL),
+	  ARRAY_AGG(DISTINCT datos_raw->>'category' ORDER BY datos_raw->>'category')
+	            FILTER (WHERE datos_raw->>'category' IS NOT NULL AND datos_raw->>'category' != '')
 		FROM fichas WHERE deleted_at IS NULL AND estado != 'eliminada'`)
-	_ = fo.Scan(&opts.Anios, &opts.AcuerdosMarco, &opts.Catalogos, &opts.TiposCompra)
+	_ = fo.Scan(&opts.Anios, &opts.AcuerdosMarco, &opts.Catalogos, &opts.TiposCompra, &opts.Categorias)
 	data.FilterOptions = opts
 
 	return data, nil

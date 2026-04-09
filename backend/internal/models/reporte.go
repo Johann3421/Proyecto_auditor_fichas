@@ -37,6 +37,7 @@ type DashboardFilters struct {
 	Mes          string
 	Departamento string
 	Catalogo     string
+	Categoria    string
 	AcuerdoMarco string
 	TipoCompra   string
 }
@@ -72,6 +73,7 @@ type FilterOptions struct {
 	Meses         []string `json:"meses"`
 	Departamentos []string `json:"departamentos"`
 	Catalogos     []string `json:"catalogos"`
+	Categorias    []string `json:"categorias"`
 	AcuerdosMarco []string `json:"acuerdos_marco"`
 	TiposCompra   []string `json:"tipos_compra"`
 }
@@ -81,6 +83,7 @@ type DashboardData struct {
 	Mensual       []MonthlyRow      `json:"mensual"`
 	Departamentos []DepartamentoRow `json:"departamentos"`
 	TiposCompra   []TipoCompraRow   `json:"tipos_compra"`
+	TopCategorias []CatalogoRow     `json:"top_categorias"`
 	TotalOrdenes  int               `json:"total_ordenes"`
 	TotalMonto    float64           `json:"total_monto"`
 	FilterOptions FilterOptions     `json:"filter_options"`

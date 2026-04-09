@@ -22,6 +22,7 @@ func ReportesHandler(w http.ResponseWriter, r *http.Request) {
 		Mes:          q.Get("mes"),
 		Departamento: q.Get("departamento"),
 		Catalogo:     q.Get("catalogo"),
+		Categoria:    q.Get("categoria"),
 		AcuerdoMarco: q.Get("acuerdo_marco"),
 		TipoCompra:   q.Get("tipo_compra"),
 	}

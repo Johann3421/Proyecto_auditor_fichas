@@ -13,7 +13,6 @@ import {
 import * as XLSX from "xlsx";
 import { apiClient } from "@/lib/api-client";
 import { queryKeys } from "@/lib/query-keys";
-import { PeruMap } from "@/components/dashboard/PeruMap";
 
 ModuleRegistry.registerModules([AllCommunityModule]);
 
@@ -24,7 +23,7 @@ interface DeptRow     { nombre: string; ordenes: number; monto: number }
 interface TipoRow     { tipo: string; monto: number; color: string }
 interface FilterOptions {
   anios: string[]; trimestres: string[]; meses: string[];
-  departamentos: string[]; catalogos: string[];
+  departamentos: string[]; catalogos: string[]; categorias: string[];
   acuerdos_marco: string[]; tipos_compra: string[];
 }
 interface DashboardData {
@@ -32,6 +31,7 @@ interface DashboardData {
   mensual: MonthlyRow[];
   departamentos: DeptRow[];
   tipos_compra: TipoRow[];
+  top_categorias: CatalogoRow[];
   total_ordenes: number;
   total_monto: number;
   filter_options: FilterOptions;
@@ -94,7 +94,7 @@ function TreemapCell(props: any) {
 // ── Main component ──────────────────────────────────────────────────────────────
 export default function PowerBIDashboard() {
   const [filters, setFilters] = useState<Record<string, string>>({
-    anio: "", catalogo: "", acuerdo_marco: "", tipo_compra: "",
+    anio: "", catalogo: "", categoria: "", acuerdo_marco: "", tipo_compra: "",
   });
 
   const { data, isLoading } = useQuery<DashboardData>({
@@ -110,11 +110,11 @@ export default function PowerBIDashboard() {
 
   const opts: FilterOptions = data?.filter_options ?? {
     anios: [], trimestres: [], meses: [], departamentos: [],
-    catalogos: [], acuerdos_marco: [], tipos_compra: [],
+    catalogos: [], categorias: [], acuerdos_marco: [], tipos_compra: [],
   };
 
   function setFilter(k: string, v: string) { setFilters(prev => ({ ...prev, [k]: v })); }
-  function resetFilters() { setFilters({ anio: "", catalogo: "", acuerdo_marco: "", tipo_compra: "" }); }
+  function resetFilters() { setFilters({ anio: "", catalogo: "", categoria: "", acuerdo_marco: "", tipo_compra: "" }); }
 
   const colDefs: ColDef[] = useMemo(() => [
     { headerName: "Catálogo", field: "catalogo", flex: 3, filter: true },
@@ -125,11 +125,12 @@ export default function PowerBIDashboard() {
     { headerName: "%", field: "percent", width: 80, cellClass: "text-right" },
   ], []);
 
-  const catalogos   = data?.catalogos     ?? [];
-  const mensual     = data?.mensual       ?? [];
-  const deptos      = data?.departamentos ?? [];
-  const tipos       = data?.tipos_compra  ?? [];
-  const totalFichas = data?.total_ordenes ?? 0;
+  const catalogos     = data?.catalogos     ?? [];
+  const mensual       = data?.mensual       ?? [];
+  const deptos        = data?.departamentos ?? [];
+  const tipos         = data?.tipos_compra  ?? [];
+  const topCategorias = data?.top_categorias ?? [];
+  const totalFichas   = data?.total_ordenes ?? 0;
 
   const treemapData = catalogos.map(r => ({ name: r.catalogo, size: r.ordenes }));
 
@@ -164,6 +165,7 @@ export default function PowerBIDashboard() {
           </div>
           <SelectFilter label="Año"           value={filters.anio}          onChange={v => setFilter("anio", v)}          options={opts.anios} />
           <SelectFilter label="Catálogo"      value={filters.catalogo}      onChange={v => setFilter("catalogo", v)}      options={opts.catalogos} />
+          <SelectFilter label="Categoría"     value={filters.categoria}     onChange={v => setFilter("categoria", v)}     options={opts.categorias} />
           <SelectFilter label="Acuerdo Marco"  value={filters.acuerdo_marco} onChange={v => setFilter("acuerdo_marco", v)} options={opts.acuerdos_marco} />
           <SelectFilter label="Estado"         value={filters.tipo_compra}   onChange={v => setFilter("tipo_compra", v)}   options={opts.tipos_compra} />
           <div className="pt-3 border-t space-y-1">
@@ -175,12 +177,27 @@ export default function PowerBIDashboard() {
         {/* Main grid */}
         <main className="flex-1 p-3 grid grid-cols-12 gap-3 overflow-auto">
 
-          {/* Row 1: Map | Treemap | AG Grid */}
+          {/* Row 1: Top Categorías | Treemap | AG Grid */}
           <section className="col-span-12 lg:col-span-3 bg-white p-3 rounded shadow flex flex-col" style={{ minHeight: 260 }}>
-            <h3 className="text-xs text-center text-[#004696] font-semibold mb-1">Cobertura Nacional</h3>
-            <div className="flex-1">
-              <PeruMap totalFichas={totalFichas} catalogLabel={filters.catalogo || undefined} />
-            </div>
+            <h3 className="text-xs text-center text-[#004696] font-semibold mb-1">Top Categorías de Producto</h3>
+            {isLoading ? (
+              <div className="flex-1 bg-gray-50 animate-pulse rounded" />
+            ) : topCategorias.length === 0 ? (
+              <div className="flex-1 flex items-center justify-center text-xs text-gray-400">Sin datos</div>
+            ) : (
+              <div className="flex-1">
+                <ResponsiveContainer width="100%" height={220}>
+                  <BarChart data={topCategorias} layout="vertical" margin={{ left: 4, right: 20 }}>
+                    <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+                    <XAxis type="number" tick={{ fontSize: 8 }} />
+                    <YAxis dataKey="catalogo" type="category" width={110} tick={{ fontSize: 7 }}
+                      tickFormatter={(v: string) => v.length > 18 ? v.substring(0, 16) + "…" : v} />
+                    <Tooltip formatter={(v: number) => [fmtNum(v), "Fichas"]} />
+                    <Bar dataKey="ordenes" fill="#8B5CF6" />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )}
           </section>
 
           <section className="col-span-12 lg:col-span-4 bg-white p-3 rounded shadow flex flex-col" style={{ minHeight: 260 }}>
