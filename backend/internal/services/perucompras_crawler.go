@@ -22,7 +22,34 @@ const catalogBaseURL = "https://buscadorcatalogos.perucompras.gob.pe"
 
 // maxPagesDefault controls how many pages (12 items/page) to fetch per agreement.
 // Override with CEAM_MAX_PAGES env var; set to 0 for unlimited (may take a long time).
-const maxPagesDefault = 5
+const maxPagesDefault = 100
+
+// targetCatalogKeywords — only agreements whose description contains one of these
+// normalised (no-accent uppercase) substrings will be scraped.
+var targetCatalogKeywords = []string{
+	"COMPUTADORAS DE ESCRITORIO",
+	"COMPUTADORAS PORTATILES",
+	"ESCANERES",
+	"IMPRESORAS",
+	"REPUESTOS Y ACCESORIOS DE OFICINA",
+	"UTILES DE ESCRITORIO",
+}
+
+// isTargetCatalog returns true when the agreement description matches any target keyword.
+func isTargetCatalog(desc string) bool {
+	r := strings.NewReplacer(
+		"á", "A", "Á", "A", "é", "E", "É", "E",
+		"í", "I", "Í", "I", "ó", "O", "Ó", "O",
+		"ú", "U", "Ú", "U", "ñ", "N", "Ñ", "N",
+	)
+	norm := r.Replace(strings.ToUpper(desc))
+	for _, kw := range targetCatalogKeywords {
+		if strings.Contains(norm, kw) {
+			return true
+		}
+	}
+	return false
+}
 
 type PeruComprasCrawler struct {
 	client *http.Client
@@ -66,6 +93,20 @@ func (c *PeruComprasCrawler) ScrapeAllCatalogs(ctx context.Context) error {
 
 	agreements := parseAgreements(homeHTML)
 	log.Printf("[Crawler] %d acuerdos vigentes encontrados", len(agreements))
+
+	// Filter to target catalogs only.
+	var targeted []agreementInfo
+	for _, ag := range agreements {
+		if isTargetCatalog(ag.Description) {
+			targeted = append(targeted, ag)
+		}
+	}
+	if len(targeted) == 0 {
+		log.Println("[Crawler] Ningún acuerdo coincide con catálogos objetivo — scrapeando todos")
+		targeted = agreements
+	}
+	log.Printf("[Crawler] %d/%d acuerdos seleccionados para scraping", len(targeted), len(agreements))
+	agreements = targeted
 
 	totalFichas := 0
 	for _, ag := range agreements {
@@ -317,16 +358,25 @@ func parseProductCards(body, acuerdoCode, acuerdoDesc string) []models.Ficha {
 			"status_raw":     statusStr,
 		}
 
+		// Parse DD/MM/YYYY → time.Time for published_at column.
+		var pubAt *time.Time
+		if pubDate != "" {
+			if t, err := time.Parse("02/01/2006", pubDate); err == nil {
+				pubAt = &t
+			}
+		}
+
 		result = append(result, models.Ficha{
-			FichaID:   fichaID,
-			Nombre:    nombre,
-			Marca:     marca,
-			Acuerdo:   acuerdoCode,
-			Estado:    estado,
-			UrlFicha:  &urlFicha,
-			DatosRaw:  datosRaw,
-			CreatedAt: now,
-			UpdatedAt: now,
+			FichaID:     fichaID,
+			Nombre:      nombre,
+			Marca:       marca,
+			Acuerdo:     acuerdoCode,
+			Estado:      estado,
+			UrlFicha:    &urlFicha,
+			DatosRaw:    datosRaw,
+			PublishedAt: pubAt,
+			CreatedAt:   now,
+			UpdatedAt:   now,
 		})
 	}
 	return result

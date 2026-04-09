@@ -90,16 +90,19 @@ func (r *Repository) queryDashboardData(ctx context.Context, f models.DashboardF
 	}
 	rows.Close()
 
-	// ── mensual (fichas by creation month) ────────────────────────────────────
+	// ── mensual (fichas by publication month, 2025 onwards) ─────────────────
 	mRows, err := r.pool.Query(ctx, `
-		SELECT TO_CHAR(created_at, 'TMMonth') AS mes,
+		SELECT TO_CHAR(published_at, 'Mon YYYY') AS mes,
 		       COUNT(*)::FLOAT AS ordenes,
 		       0.0::FLOAT AS monto
 		FROM fichas
 		WHERE deleted_at IS NULL
-		  AND ($1='' OR EXTRACT(YEAR FROM created_at)::TEXT = $1)
-		GROUP BY TO_CHAR(created_at, 'TMMonth'), EXTRACT(MONTH FROM created_at)
-		ORDER BY EXTRACT(MONTH FROM created_at)`,
+		  AND published_at IS NOT NULL
+		  AND published_at >= '2025-01-01'
+		  AND ($1='' OR EXTRACT(YEAR FROM published_at)::TEXT = $1)
+		GROUP BY EXTRACT(YEAR FROM published_at), EXTRACT(MONTH FROM published_at),
+		         TO_CHAR(published_at, 'Mon YYYY')
+		ORDER BY EXTRACT(YEAR FROM published_at), EXTRACT(MONTH FROM published_at)`,
 		f.Anio)
 	if err != nil {
 		return nil, fmt.Errorf("mensual query: %w", err)
@@ -167,9 +170,9 @@ func (r *Repository) queryDashboardData(ctx context.Context, f models.DashboardF
 	var opts models.FilterOptions
 	fo := r.pool.QueryRow(ctx, `
 		SELECT
-		  ARRAY_AGG(DISTINCT EXTRACT(YEAR FROM created_at)::TEXT
-		            ORDER BY EXTRACT(YEAR FROM created_at)::TEXT DESC)
-		            FILTER (WHERE created_at IS NOT NULL),
+		  ARRAY_AGG(DISTINCT EXTRACT(YEAR FROM published_at)::TEXT
+		            ORDER BY EXTRACT(YEAR FROM published_at)::TEXT DESC)
+		            FILTER (WHERE published_at IS NOT NULL AND published_at >= '2025-01-01'),
 		  ARRAY_AGG(DISTINCT acuerdo ORDER BY acuerdo)
 		            FILTER (WHERE acuerdo IS NOT NULL),
 		  ARRAY_AGG(DISTINCT datos_raw->>'catalogue' ORDER BY datos_raw->>'catalogue')
@@ -203,16 +206,17 @@ func (r *Repository) UpsertContrataciones(ctx context.Context, rows []models.Con
 // UpsertFicha inserts or updates a single ficha scraped from buscadorcatalogos.perucompras.gob.pe.
 func (r *Repository) UpsertFicha(ctx context.Context, f *models.Ficha) error {
 	_, err := r.pool.Exec(ctx, `
-		INSERT INTO fichas (ficha_id, nombre, marca, acuerdo, estado, url_ficha, datos_raw)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		INSERT INTO fichas (ficha_id, nombre, marca, acuerdo, estado, url_ficha, datos_raw, published_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		ON CONFLICT (ficha_id) DO UPDATE
-		SET nombre    = EXCLUDED.nombre,
-		    marca     = EXCLUDED.marca,
-		    estado    = EXCLUDED.estado,
-		    url_ficha = EXCLUDED.url_ficha,
-		    datos_raw = EXCLUDED.datos_raw,
-		    updated_at = NOW()`,
-		f.FichaID, f.Nombre, f.Marca, f.Acuerdo, f.Estado, f.UrlFicha, f.DatosRaw)
+		SET nombre       = EXCLUDED.nombre,
+		    marca        = EXCLUDED.marca,
+		    estado       = EXCLUDED.estado,
+		    url_ficha    = EXCLUDED.url_ficha,
+		    datos_raw    = EXCLUDED.datos_raw,
+		    published_at = EXCLUDED.published_at,
+		    updated_at   = NOW()`,
+		f.FichaID, f.Nombre, f.Marca, f.Acuerdo, f.Estado, f.UrlFicha, f.DatosRaw, f.PublishedAt)
 	return err
 }
 

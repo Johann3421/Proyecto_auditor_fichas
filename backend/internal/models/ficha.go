@@ -28,6 +28,7 @@ type Ficha struct {
 	PrecioEstimado *float64               `json:"precio_estimado" db:"precio_estimado"` // Para el JOIN de lecturas
 	UrlFicha       *string                `json:"url_ficha"       db:"url_ficha"`
 	DatosRaw       map[string]interface{} `json:"datos_raw"       db:"datos_raw"`
+	PublishedAt    *time.Time             `json:"published_at"    db:"published_at"`
 	CreatedAt      time.Time              `json:"created_at"      db:"created_at"`
 	UpdatedAt      time.Time              `json:"updated_at"      db:"updated_at"`
 	DeletedAt      *time.Time             `json:"deleted_at"      db:"deleted_at"`
