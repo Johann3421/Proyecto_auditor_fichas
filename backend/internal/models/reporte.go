@@ -77,11 +77,23 @@ type FilterOptions struct {
 }
 
 type DashboardData struct {
-	Catalogos     []CatalogoRow    `json:"catalogos"`
-	Mensual       []MonthlyRow     `json:"mensual"`
+	Catalogos     []CatalogoRow     `json:"catalogos"`
+	Mensual       []MonthlyRow      `json:"mensual"`
 	Departamentos []DepartamentoRow `json:"departamentos"`
-	TiposCompra   []TipoCompraRow  `json:"tipos_compra"`
+	TiposCompra   []TipoCompraRow   `json:"tipos_compra"`
 	TotalOrdenes  int               `json:"total_ordenes"`
 	TotalMonto    float64           `json:"total_monto"`
 	FilterOptions FilterOptions     `json:"filter_options"`
+}
+
+// ContratacionIngest is a single parsed row from PeruCompras open-data CSV/JSON.
+type ContratacionIngest struct {
+	Anio         int
+	Mes          int
+	Departamento string
+	Catalogo     string
+	TipoCompra   string
+	AcuerdoMarco string
+	NroOrdenes   int
+	Monto        float64
 }

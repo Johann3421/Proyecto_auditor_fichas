@@ -53,14 +53,9 @@ func (r *Repository) GetFichas(ctx context.Context) ([]models.Ficha, error) {
 }
 
 // GetDashboardData returns aggregated contrataciones data for the BI dashboard.
-// If the contrataciones table is empty or doesn't exist it returns rich mock data
-// so the frontend stays functional before real ingestion has occurred.
+// Returns empty arrays when the contrataciones table has no data yet.
 func (r *Repository) GetDashboardData(ctx context.Context, f models.DashboardFilters) (*models.DashboardData, error) {
-	data, err := r.queryDashboardData(ctx, f)
-	if err != nil || len(data.Catalogos) == 0 {
-		return mockDashboardData(), nil
-	}
-	return data, nil
+	return r.queryDashboardData(ctx, f)
 }
 
 func (r *Repository) queryDashboardData(ctx context.Context, f models.DashboardFilters) (*models.DashboardData, error) {
@@ -192,65 +187,21 @@ func (r *Repository) queryDashboardData(ctx context.Context, f models.DashboardF
 	return data, nil
 }
 
-// mockDashboardData returns realistic sample data so the UI works before DB is seeded.
-func mockDashboardData() *models.DashboardData {
-	meses := []string{
-		"enero","febrero","marzo","abril","mayo","junio",
-		"julio","agosto","septiembre","octubre","noviembre","diciembre",
+// UpsertContrataciones inserts or updates a batch of procurement rows.
+func (r *Repository) UpsertContrataciones(ctx context.Context, rows []models.ContratacionIngest) error {
+	for _, row := range rows {
+		_, err := r.pool.Exec(ctx, `
+			INSERT INTO contrataciones (anio, mes, departamento, catalogo, tipo_compra, acuerdo_marco, nro_ordenes, monto)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+			ON CONFLICT (anio, mes, departamento, catalogo, tipo_compra, acuerdo_marco)
+			DO UPDATE SET nro_ordenes = EXCLUDED.nro_ordenes, monto = EXCLUDED.monto`,
+			row.Anio, row.Mes, row.Departamento, row.Catalogo,
+			row.TipoCompra, row.AcuerdoMarco, row.NroOrdenes, row.Monto)
+		if err != nil {
+			return err
+		}
 	}
-	ordenesBase := []float64{0.02, 0.07, 0.12, 0.09, 0.10, 0.09, 0.10, 0.09, 0.10, 0.11, 0.11, 0.11}
-	montoBase   := []float64{289.57, 797.96, 1254.84, 1068.21, 1095.38, 1024.82, 1084.26, 1149.67, 1276.11, 1548.41, 1725.18, 1841.39}
-
-	var mensual []models.MonthlyRow
-	for i, m := range meses {
-		mensual = append(mensual, models.MonthlyRow{Mes: m, Ordenes: ordenesBase[i], Monto: montoBase[i]})
-	}
-
-	catalogos := []models.CatalogoRow{
-		{Catalogo: "COMPUTADORAS DE ESCRITORIO", Ordenes: 54265, Monto: 3189365150.95, Percent: 22.53},
-		{Catalogo: "CONSUMIBLES",                Ordenes: 229804, Monto: 1440042526.61, Percent: 10.17},
-		{Catalogo: "COMPUTADORAS PORTÁTILES",    Ordenes: 18489, Monto: 1419453724.91, Percent: 10.03},
-		{Catalogo: "IMPRESORAS",                 Ordenes: 51873, Monto: 1065797064.98, Percent: 7.53},
-		{Catalogo: "PAPELES Y CARTONES",         Ordenes: 153546, Monto: 1001272879.20, Percent: 7.07},
-		{Catalogo: "ÚTILES DE ESCRITORIO",       Ordenes: 252021, Monto: 895122526.27, Percent: 6.32},
-		{Catalogo: "SVC EMISIÓN BOLETOS AÉREOS", Ordenes: 73348, Monto: 799747627.66, Percent: 5.65},
-		{Catalogo: "TUBERÍAS Y ACCESORIOS",      Ordenes: 16485, Monto: 752802249.07, Percent: 5.32},
-		{Catalogo: "BIENES PARA USOS DIVERSOS",  Ordenes: 23116, Monto: 542206393.32, Percent: 3.83},
-		{Catalogo: "MATERIALES DE LIMPIEZA",     Ordenes: 60804, Monto: 357998855.72, Percent: 2.53},
-	}
-
-	departamentos := []models.DepartamentoRow{
-		{Nombre: "LIMA",        Ordenes: 512345, Monto: 6500000000.00},
-		{Nombre: "AREQUIPA",    Ordenes: 98765, Monto: 1200000000.00},
-		{Nombre: "CUSCO",       Ordenes: 76543, Monto: 980000000.00},
-		{Nombre: "PIURA",       Ordenes: 65432, Monto: 870000000.00},
-		{Nombre: "LA LIBERTAD", Ordenes: 54321, Monto: 740000000.00},
-		{Nombre: "JUNÍN",       Ordenes: 43210, Monto: 620000000.00},
-		{Nombre: "PUNO",        Ordenes: 32109, Monto: 510000000.00},
-		{Nombre: "ANCASH",      Ordenes: 21098, Monto: 430000000.00},
-	}
-
-	tiposCompra := []models.TipoCompraRow{
-		{Tipo: "GRAN COMPRA",    Monto: 7000000000.00, Color: "#01B8AA"},
-		{Tipo: "ORDINARIA",      Monto: 5800000000.00, Color: "#374649"},
-		{Tipo: "BOLETOS AÉREOS", Monto: 1355802998.92, Color: "#FD625E"},
-	}
-
-	return &models.DashboardData{
-		Catalogos:     catalogos,
-		Mensual:       mensual,
-		Departamentos: departamentos,
-		TiposCompra:   tiposCompra,
-		TotalOrdenes:  1106038,
-		TotalMonto:    14155802998.92,
-		FilterOptions: models.FilterOptions{
-			Anios:         []string{"2024", "2023", "2022"},
-			Trimestres:    []string{"1", "2", "3", "4"},
-			Meses:         meses,
-			Departamentos: []string{"LIMA","AREQUIPA","CUSCO","PIURA","LA LIBERTAD","JUNÍN","PUNO","ANCASH"},
-			Catalogos:     []string{"COMPUTADORAS DE ESCRITORIO","CONSUMIBLES","COMPUTADORAS PORTÁTILES","IMPRESORAS"},
-			AcuerdosMarco: []string{"AM-01","AM-02","AM-03"},
-			TiposCompra:   []string{"GRAN COMPRA","ORDINARIA","BOLETOS AÉREOS"},
-		},
-	}
+	return nil
 }
+
+

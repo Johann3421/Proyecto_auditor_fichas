@@ -43,7 +43,7 @@ func main() {
 	handlers.InitHandlers(repo)
 
 	crawler := services.NewPeruComprasCrawler(repo)
-	go crawler.RunBackgroundMockCrawler(context.Background())
+	go crawler.RunScheduledIngestion(context.Background())
 
 	// 4. Inicializar Router Chi
 	r := chi.NewRouter()

@@ -2,155 +2,216 @@ package services
 
 import (
 	"context"
+	"encoding/csv"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/http/cookiejar"
-	"net/url"
-	"regexp"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/Johann3421/Proyecto_auditor_fichas/backend/internal/database"
 	"github.com/Johann3421/Proyecto_auditor_fichas/backend/internal/models"
 )
 
+// Known base URL for PeruCompras open-data portal.
+// Override per-year CSV via CEAM_DATA_URL env var.
+const peruComprasBaseURL = "https://datosabiertos.perucompras.gob.pe"
+
 type PeruComprasCrawler struct {
-	BaseURL string
-	client  *http.Client
-	dbRepo  *database.Repository
+	client *http.Client
+	repo   *database.Repository
 }
 
 func NewPeruComprasCrawler(dbRepo *database.Repository) *PeruComprasCrawler {
 	jar, _ := cookiejar.New(nil)
 	return &PeruComprasCrawler{
-		BaseURL: "https://buscadorcatalogos.perucompras.gob.pe/",
 		client: &http.Client{
 			Jar:     jar,
-			Timeout: 30 * time.Second,
+			Timeout: 120 * time.Second,
 		},
-		dbRepo: dbRepo,
+		repo: dbRepo,
 	}
 }
 
-// StartExtraction inicia el proceso asincrono de extracción del catálogo buscado.
-func (c *PeruComprasCrawler) StartExtraction(ctx context.Context, searchQuery string, agreementFilter string) error {
-	log.Printf("[Crawler] Iniciando extracción para Acuerdo: %s", agreementFilter)
-
-	// Paso 1: Obtener la Cookie Antisecuestro y el RequestVerificationToken
-	req, err := http.NewRequestWithContext(ctx, "GET", c.BaseURL, nil)
-	if err != nil {
-		return err
+// RunScheduledIngestion ingests PeruCompras open-data CSV into the contrataciones table.
+// It is launched as a goroutine on server startup. It ingests the current year
+// and the two preceding years. Set CEAM_DATA_URL to override the auto-built URL.
+func (c *PeruComprasCrawler) RunScheduledIngestion(ctx context.Context) {
+	if c.repo == nil {
+		log.Println("[Ingestor] Sin repositorio DB — ingesta omitida.")
+		return
 	}
-	// Mimic a standard browser
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
-	
+
+	customURL := os.Getenv("CEAM_DATA_URL")
+	if customURL != "" {
+		log.Printf("[Ingestor] Ingiriendo desde CEAM_DATA_URL: %s", customURL)
+		if err := c.IngestCSV(ctx, customURL); err != nil {
+			log.Printf("[Ingestor] error en CEAM_DATA_URL: %v", err)
+		}
+		return
+	}
+
+	// Default: try the PeruCompras open-data portal for current + 2 previous years.
+	currentYear := time.Now().Year()
+	for _, year := range []int{currentYear, currentYear - 1, currentYear - 2} {
+		csvURL := buildPeruComprasURL(year)
+		log.Printf("[Ingestor] Ingiriendo año %d desde %s", year, csvURL)
+		if err := c.IngestCSV(ctx, csvURL); err != nil {
+			log.Printf("[Ingestor] error ingiriendo año %d: %v", year, err)
+		}
+	}
+}
+
+// IngestCSV fetches a CSV file and upserts all valid rows into the contrataciones table.
+//
+// The CSV must have a header row. Column matching is case-insensitive.
+// Recognised column names:
+//
+//	year      → ANIO | AÑO | ANNO | ANO
+//	month     → MES
+//	dept      → DEPARTAMENTO | REGION
+//	catalog   → CATALOGO | NOMBRE_CATALOGO
+//	type      → TIPO_COMPRA | TIPOCOMPRA
+//	agreement → ACUERDO_MARCO | NUMERO_ACUERDO
+//	orders    → NRO_ORDENES | NUMERO_ORDENES | N_ORDENES
+//	amount    → MONTO | MONTO_TOTAL
+func (c *PeruComprasCrawler) IngestCSV(ctx context.Context, csvURL string) error {
+	if c.repo == nil {
+		return nil
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, csvURL, nil)
+	if err != nil {
+		return fmt.Errorf("crear request: %w", err)
+	}
+	req.Header.Set("User-Agent", "CEAM-Auditor/1.0")
+
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("fetch CSV: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		log.Printf("[Crawler] Error: El servidor devolvió %d", resp.StatusCode)
-		return nil
+		return fmt.Errorf("HTTP %d al descargar %s", resp.StatusCode, csvURL)
 	}
 
-	// Extraer el token del cuerpo de la respuesta HTML (Implementación base usando RegEx en lugar de full DOM tree para rendimiento inicial)
-	bodyBytes := make([]byte, 1024*1024) // 1MB buffer aprox para la home
-	n, _ := resp.Body.Read(bodyBytes)
-	htmlContent := string(bodyBytes[:n])
+	reader := csv.NewReader(resp.Body)
+	reader.LazyQuotes = true
+	reader.TrimLeadingSpace = true
+	reader.FieldsPerRecord = -1
 
-	reStr := `<input name="__RequestVerificationToken" type="hidden" value="([^"]+)"`
-	re := regexp.MustCompile(reStr)
-	matches := re.FindStringSubmatch(htmlContent)
-	if len(matches) < 2 {
-		log.Printf("[Crawler] Error: No se pudo obtener el RequestVerificationToken. Analizador detenido.")
-		return nil
-	}
-	token := matches[1]
-
-	log.Printf("[Crawler] Token de seguridad obtenido. Realizando petición de búsqueda POST...")
-
-	// Paso 2: Ejecutar la búsqueda en "/Public/Search" o "/"
-	form := url.Values{}
-	form.Add("__RequestVerificationToken", token)
-	form.Add("IsNewSearch", "True")
-	form.Add("From", "Search")
-	form.Add("SearchText", searchQuery)
-	form.Add("Pagination.Page", "1")
-	form.Add("Pagination.LeftMostPage", "1")
-	
-	if agreementFilter != "" {
-		// Debe tener formato JSON: ["VIGENTE•EXT-CE-2024-3..."]
-		form.Add("ClientFilter.Agreement", `["`+agreementFilter+`"]`)
-	}
-
-	reqPost, err := http.NewRequestWithContext(ctx, "POST", c.BaseURL, strings.NewReader(form.Encode()))
+	headers, err := reader.Read()
 	if err != nil {
-		return err
+		return fmt.Errorf("leer cabecera CSV: %w", err)
 	}
-	reqPost.Header.Add("Content-Type", "application/x-www-form-urlencoded")
-	reqPost.Header.Add("Referer", c.BaseURL)
-	reqPost.Header.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+	idx := buildColIndex(headers)
 
-	respPost, err := c.client.Do(reqPost)
-	if err != nil {
-		return err
+	var batch []models.ContratacionIngest
+	ingested := 0
+
+	for {
+		row, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			log.Printf("[Ingestor] advertencia CSV: %v — omitiendo fila", err)
+			continue
+		}
+		cont, ok := parseRow(row, idx)
+		if !ok {
+			continue
+		}
+		batch = append(batch, cont)
+		if len(batch) >= 500 {
+			if err := c.repo.UpsertContrataciones(ctx, batch); err != nil {
+				log.Printf("[Ingestor] error upsert batch: %v", err)
+			} else {
+				ingested += len(batch)
+			}
+			batch = batch[:0]
+		}
 	}
-	defer respPost.Body.Close()
-
-	// Parseo de los resultados desde el response
-	// FIXME: Requiere parseador GoQuery para mapear las fichas cuando ya está expuesta la data total.
-	log.Printf("[Crawler] HTTP STATUS %d retornado.", respPost.StatusCode)
-
-	// Demostrador de inserción a la BD del "diff_engine" 
-	// Para enganchar con el frontend que has pedido.
-	dummyFicha := models.Ficha{
-		ID:        uuid.New(),
-		FichaID:   "DEMO-12345",
-		Nombre:    "Computadora De Escritorio Avanzada",
-		Marca:     "DemoMarca",
-		Acuerdo:   "EXT-CE-2024-3",
-		Estado:    models.EstadoActiva,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
+	if len(batch) > 0 {
+		if err := c.repo.UpsertContrataciones(ctx, batch); err != nil {
+			log.Printf("[Ingestor] error upsert batch final: %v", err)
+		} else {
+			ingested += len(batch)
+		}
 	}
-
-	err = c.dbRepo.CreateFicha(ctx, &dummyFicha)
-	if err != nil {
-		log.Printf("[Crawler] Error insertando ficha demo: %v", err)
-	} else {
-		log.Printf("[Crawler] ¡Ficha insertada con éxito!")
-	}
-
+	log.Printf("[Ingestor] %d filas ingiridas desde %s", ingested, csvURL)
 	return nil
 }
 
-// RunBackgroundMockCrawler sirve para poblar la DB con datos que demuestren que el Scraper
-// se conecta a nuestro nuevo Dashboard estilo Power BI de Contrataciones.
-func (c *PeruComprasCrawler) RunBackgroundMockCrawler(ctx context.Context) {
-	if c.dbRepo == nil {
-		log.Println("[Crawler] No hay repositorio DB disponible, mock crawler omitido.")
-		return
+// buildPeruComprasURL returns the PeruCompras open-data CSV download URL for a given year.
+// Update this pattern if PeruCompras changes their portal URL structure.
+func buildPeruComprasURL(year int) string {
+	return fmt.Sprintf(
+		"%s/dataset/ordenes-de-catalogo-electronico/resource/%d/download/ordenes_catalogo_%d.csv",
+		peruComprasBaseURL, year, year,
+	)
+}
+
+// buildColIndex maps normalised header names to their CSV column index.
+func buildColIndex(headers []string) map[string]int {
+	m := make(map[string]int, len(headers))
+	for i, h := range headers {
+		m[normalise(h)] = i
 	}
-	log.Println("[Crawler] Iniciando extracción falsa en segundo plano para activar el Dashboard...")
-	
-	// Generar fichas que calcen con mock catalogos
-	fichasFake := []models.Ficha{
-		{FichaID: "F-101", Nombre: "PC GAmer", Marca: "HP", Acuerdo: "COMPUTADORAS DE ESCRITORIO", Estado: models.EstadoActiva},
-		{FichaID: "F-102", Nombre: "Papel Bond A4", Marca: "Report", Acuerdo: "PAPELES Y CARTONES", Estado: models.EstadoActiva},
-		{FichaID: "F-103", Nombre: "Tinta Epson 664", Marca: "Epson", Acuerdo: "CONSUMIBLES", Estado: models.EstadoActiva},
+	return m
+}
+
+// normalise removes accents and uppercases a string for case-insensitive matching.
+func normalise(s string) string {
+	r := strings.NewReplacer(
+		"ñ", "N", "Ñ", "N",
+		"á", "A", "Á", "A",
+		"é", "E", "É", "E",
+		"í", "I", "Í", "I",
+		"ó", "O", "Ó", "O",
+		"ú", "U", "Ú", "U",
+	)
+	return strings.ToUpper(strings.TrimSpace(r.Replace(s)))
+}
+
+// parseRow converts a single CSV row into a ContratacionIngest.
+// Returns (row, false) if the row lacks mandatory fields.
+func parseRow(row []string, idx map[string]int) (models.ContratacionIngest, bool) {
+	get := func(keys ...string) string {
+		for _, k := range keys {
+			if i, ok := idx[k]; ok && i < len(row) {
+				return strings.TrimSpace(row[i])
+			}
+		}
+		return ""
 	}
 
-	for _, f := range fichasFake {
-		f.ID = uuid.New()
-		f.CreatedAt = time.Now()
-		f.UpdatedAt = time.Now()
-		f.DatosRaw = map[string]interface{}{"ordenes": 150, "monto_total": 450000.0}
-		
-		_ = c.dbRepo.CreateFicha(ctx, &f)
+	anio, _ := strconv.Atoi(get("ANIO", "ANO", "AÑO"))
+	mes, _ := strconv.Atoi(get("MES"))
+	if anio == 0 || mes < 1 || mes > 12 {
+		return models.ContratacionIngest{}, false
 	}
-	
-	log.Println("[Crawler] Base de datos rellenada con Fichas demo para el Auditor.")
+
+	ordenes, _ := strconv.Atoi(get("NRO_ORDENES", "NUMERO_ORDENES", "N_ORDENES", "NROORDENES", "ORDENES"))
+	montoStr := strings.ReplaceAll(
+		strings.ReplaceAll(get("MONTO", "MONTO_TOTAL", "MONTOTOTAL"), ",", "."),
+		" ", "",
+	)
+	monto, _ := strconv.ParseFloat(montoStr, 64)
+
+	return models.ContratacionIngest{
+		Anio:         anio,
+		Mes:          mes,
+		Departamento: strings.ToUpper(get("DEPARTAMENTO", "REGION", "DEPARTAMENTO_REGION")),
+		Catalogo:     strings.ToUpper(get("CATALOGO", "NOMBRE_CATALOGO", "NOMBRE CATALOGO")),
+		TipoCompra:   strings.ToUpper(get("TIPO_COMPRA", "TIPOCOMPRA", "TIPO COMPRA")),
+		AcuerdoMarco: strings.ToUpper(get("ACUERDO_MARCO", "NUMERO_ACUERDO", "ACUERDO MARCO", "ACUERDOMARCO")),
+		NroOrdenes:   ordenes,
+		Monto:        monto,
+	}, true
 }
