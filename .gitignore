@@ -28,3 +28,4 @@ frontend/.vercel/
 docker-compose.override.yml
 *.sqldump
 pgdata/
+cookies.txt

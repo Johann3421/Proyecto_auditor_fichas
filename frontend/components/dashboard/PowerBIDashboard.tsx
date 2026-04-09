@@ -204,7 +204,7 @@ function SelectFilter({ label, value, onChange, options } : { label: string; val
       <label className="text-[11px] font-medium text-gray-700 uppercase">{label}</label>
       <select value={value} onChange={e=>onChange?.(e.target.value)} className="p-1 border rounded text-sm">
         <option value="">Todas</option>
-        {options.map(o=> <option key={o} value={o}>{o}</option>)}
+        {(options ?? []).map(o=> <option key={o} value={o}>{o}</option>)}
       </select>
     </div>
   );
