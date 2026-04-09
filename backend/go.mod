@@ -1,4 +1,4 @@
-module github.com/tu-usuario/ceam-auditor/backend
+module github.com/Johann3421/Proyecto_auditor_fichas/backend
 
 go 1.22
 

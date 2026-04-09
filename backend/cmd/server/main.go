@@ -9,9 +9,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
-	"github.com/tu-usuario/ceam-auditor/backend/internal/database"
-	"github.com/tu-usuario/ceam-auditor/backend/internal/handlers"
-	mymiddleware "github.com/tu-usuario/ceam-auditor/backend/internal/middleware"
+	"github.com/Johann3421/Proyecto_auditor_fichas/backend/internal/database"
+	"github.com/Johann3421/Proyecto_auditor_fichas/backend/internal/handlers"
+	mymiddleware "github.com/Johann3421/Proyecto_auditor_fichas/backend/internal/middleware"
 )
 
 func main() {
