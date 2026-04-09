@@ -4,12 +4,12 @@ WORKDIR /app
 COPY go.mod go.sum* ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /app/ceam-server ./cmd/server
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /ceam-server ./cmd/server
 
 # Stage 2: imagen final mínima
 FROM alpine:3.19
 RUN apk --no-cache add ca-certificates tzdata
 WORKDIR /app
-COPY --from=builder /app/ceam-server .
+COPY --from=builder /ceam-server /ceam-server
 EXPOSE 8080
-CMD ["./ceam-server"]
+CMD ["/ceam-server"]

@@ -7,7 +7,7 @@ services:
       POSTGRES_PASSWORD: ceam_dev_password
       POSTGRES_DB: ceam_db
     ports:
-      - "9432:5432"
+      - "5438:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     networks:
@@ -28,8 +28,6 @@ services:
       PORT: "8080"
     ports:
       - "8080:8080"
-    volumes:
-      - ./backend:/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -46,10 +44,6 @@ services:
       NEXT_PUBLIC_API_URL: http://backend:8080
     ports:
       - "3000:3000"
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
-      - /app/.next
     depends_on:
       - backend
     networks:
