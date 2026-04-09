@@ -2,13 +2,14 @@ package services
 
 import (
 	"context"
-	"encoding/csv"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"net/http"
 	"net/http/cookiejar"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -16,6 +17,12 @@ import (
 	"github.com/Johann3421/Proyecto_auditor_fichas/backend/internal/database"
 	"github.com/Johann3421/Proyecto_auditor_fichas/backend/internal/models"
 )
+
+const catalogBaseURL = "https://buscadorcatalogos.perucompras.gob.pe"
+
+// maxPagesDefault controls how many pages (12 items/page) to fetch per agreement.
+// Override with CEAM_MAX_PAGES env var; set to 0 for unlimited (may take a long time).
+const maxPagesDefault = 5
 
 type PeruComprasCrawler struct {
 	client *http.Client
@@ -25,177 +32,302 @@ type PeruComprasCrawler struct {
 func NewPeruComprasCrawler(dbRepo *database.Repository) *PeruComprasCrawler {
 	jar, _ := cookiejar.New(nil)
 	return &PeruComprasCrawler{
-		client: &http.Client{
-			Jar:     jar,
-			Timeout: 120 * time.Second,
-		},
-		repo: dbRepo,
+		client: &http.Client{Jar: jar, Timeout: 60 * time.Second},
+		repo:   dbRepo,
 	}
 }
 
-// RunScheduledIngestion ingests data from the URL set in CEAM_DATA_URL.
-// Set this environment variable in Dokploy to a publicly accessible CSV URL
-// (e.g. a Google Drive / GitHub / S3 direct-download link for the PeruCompras
-// ordenes de catálogo electrónico export).
-//
-// If CEAM_DATA_URL is not set the function logs a warning and returns — no
-// attempt is made to connect to any external host.
+// RunScheduledIngestion scrapes buscadorcatalogos.perucompras.gob.pe and saves fichas to DB.
+// Set CEAM_MAX_PAGES=0 in Dokploy to scrape all pages (slow); default is 5 per agreement.
 func (c *PeruComprasCrawler) RunScheduledIngestion(ctx context.Context) {
 	if c.repo == nil {
-		log.Println("[Ingestor] Sin repositorio DB — ingesta omitida.")
+		log.Println("[Crawler] Sin repositorio DB — omitido.")
 		return
 	}
-
-	customURL := os.Getenv("CEAM_DATA_URL")
-	if customURL == "" {
-		log.Println("[Ingestor] CEAM_DATA_URL no configurado. " +
-			"Configura esta variable en Dokploy apuntando al CSV de ordenes de catálogo de PeruCompras.")
-		return
-	}
-
-	log.Printf("[Ingestor] Ingiriendo desde CEAM_DATA_URL: %s", customURL)
-	if err := c.IngestCSV(ctx, customURL); err != nil {
-		log.Printf("[Ingestor] error: %v", err)
+	log.Println("[Crawler] Iniciando scraping de buscadorcatalogos.perucompras.gob.pe")
+	if err := c.ScrapeAllCatalogs(ctx); err != nil {
+		log.Printf("[Crawler] error: %v", err)
 	}
 }
 
-// IngestCSV fetches a CSV file and upserts all valid rows into the contrataciones table.
-//
-// The CSV must have a header row. Column matching is case-insensitive.
-// Recognised column names:
-//
-//	year      → ANIO | AÑO | ANNO | ANO
-//	month     → MES
-//	dept      → DEPARTAMENTO | REGION
-//	catalog   → CATALOGO | NOMBRE_CATALOGO
-//	type      → TIPO_COMPRA | TIPOCOMPRA
-//	agreement → ACUERDO_MARCO | NUMERO_ACUERDO
-//	orders    → NRO_ORDENES | NUMERO_ORDENES | N_ORDENES
-//	amount    → MONTO | MONTO_TOTAL
-func (c *PeruComprasCrawler) IngestCSV(ctx context.Context, csvURL string) error {
-	if c.repo == nil {
-		return nil
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, csvURL, nil)
-	if err != nil {
-		return fmt.Errorf("crear request: %w", err)
-	}
-	req.Header.Set("User-Agent", "CEAM-Auditor/1.0")
-
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("fetch CSV: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("HTTP %d al descargar %s", resp.StatusCode, csvURL)
-	}
-
-	reader := csv.NewReader(resp.Body)
-	reader.LazyQuotes = true
-	reader.TrimLeadingSpace = true
-	reader.FieldsPerRecord = -1
-
-	headers, err := reader.Read()
-	if err != nil {
-		return fmt.Errorf("leer cabecera CSV: %w", err)
-	}
-	idx := buildColIndex(headers)
-
-	var batch []models.ContratacionIngest
-	ingested := 0
-
-	for {
-		row, err := reader.Read()
-		if err == io.EOF {
-			break
+// ScrapeAllCatalogs fetches all active agreements from the homepage and scrapes each one.
+func (c *PeruComprasCrawler) ScrapeAllCatalogs(ctx context.Context) error {
+	maxPages := maxPagesDefault
+	if v := os.Getenv("CEAM_MAX_PAGES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			maxPages = n
 		}
+	}
+
+	homeHTML, csrfToken, err := c.fetchHome()
+	if err != nil {
+		return fmt.Errorf("fetch homepage: %w", err)
+	}
+
+	agreements := parseAgreements(homeHTML)
+	log.Printf("[Crawler] %d acuerdos vigentes encontrados", len(agreements))
+
+	totalFichas := 0
+	for _, ag := range agreements {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		n, err := c.scrapeAgreement(ctx, csrfToken, ag, maxPages)
 		if err != nil {
-			log.Printf("[Ingestor] advertencia CSV: %v — omitiendo fila", err)
-			continue
-		}
-		cont, ok := parseRow(row, idx)
-		if !ok {
-			continue
-		}
-		batch = append(batch, cont)
-		if len(batch) >= 500 {
-			if err := c.repo.UpsertContrataciones(ctx, batch); err != nil {
-				log.Printf("[Ingestor] error upsert batch: %v", err)
-			} else {
-				ingested += len(batch)
-			}
-			batch = batch[:0]
-		}
-	}
-	if len(batch) > 0 {
-		if err := c.repo.UpsertContrataciones(ctx, batch); err != nil {
-			log.Printf("[Ingestor] error upsert batch final: %v", err)
+			log.Printf("[Crawler] error en acuerdo %s: %v", ag.Code, err)
 		} else {
-			ingested += len(batch)
+			totalFichas += n
+		}
+
+		// Refresh token and cookies between agreements to avoid session expiry.
+		if _, tok, refreshErr := c.fetchHome(); refreshErr == nil {
+			csrfToken = tok
 		}
 	}
-	log.Printf("[Ingestor] %d filas ingiridas desde %s", ingested, csvURL)
+	log.Printf("[Crawler] Scraping completado: %d fichas procesadas", totalFichas)
 	return nil
 }
 
-// buildColIndex maps normalised header names to their CSV column index.
-func buildColIndex(headers []string) map[string]int {
-	m := make(map[string]int, len(headers))
-	for i, h := range headers {
-		m[normalise(h)] = i
+type agreementInfo struct {
+	Code        string
+	Description string
+	// Full data-agreement value as needed for the POST filter, e.g.
+	// "VIGENTE•EXT-CE-2022-5 COMPUTADORAS DE ESCRITORIO..."
+	FilterValue string
+}
+
+func (c *PeruComprasCrawler) fetchHome() (string, string, error) {
+	resp, err := c.client.Get(catalogBaseURL + "/")
+	if err != nil {
+		return "", "", err
 	}
-	return m
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", "", err
+	}
+	body := string(b)
+
+	reToken := regexp.MustCompile(`__RequestVerificationToken" type="hidden" value="([^"]+)"`)
+	m := reToken.FindStringSubmatch(body)
+	if len(m) < 2 {
+		return body, "", fmt.Errorf("CSRF token no encontrado en homepage")
+	}
+	return body, m[1], nil
 }
 
-// normalise removes accents and uppercases a string for case-insensitive matching.
-func normalise(s string) string {
-	r := strings.NewReplacer(
-		"ñ", "N", "Ñ", "N",
-		"á", "A", "Á", "A",
-		"é", "E", "É", "E",
-		"í", "I", "Í", "I",
-		"ó", "O", "Ó", "O",
-		"ú", "U", "Ú", "U",
+// parseAgreements extracts the list of active agreements from the homepage HTML.
+func parseAgreements(body string) []agreementInfo {
+	// Each agreement icon has: data-agreement="VIGENTE•EXT-CE-2022-5 DESCRIPTION"
+	re := regexp.MustCompile(`data-agreement="([^"]+)"`)
+	matches := re.FindAllStringSubmatch(body, -1)
+
+	seen := map[string]bool{}
+	var result []agreementInfo
+	for _, m := range matches {
+		raw := html.UnescapeString(m[1]) // decode HTML entities
+		if seen[raw] {
+			continue
+		}
+		seen[raw] = true
+
+		// Format: "VIGENTE•EXT-CE-2022-5 DESCRIPTION"
+		parts := strings.SplitN(raw, "\u2022", 2) // split on •
+		if len(parts) != 2 {
+			continue
+		}
+		rest := strings.TrimSpace(parts[1]) // "EXT-CE-2022-5 DESCRIPTION"
+		codeParts := strings.SplitN(rest, " ", 2)
+		code := codeParts[0]
+		desc := ""
+		if len(codeParts) > 1 {
+			desc = codeParts[1]
+		}
+		result = append(result, agreementInfo{
+			Code:        code,
+			Description: desc,
+			FilterValue: raw,
+		})
+	}
+	return result
+}
+
+// scrapeAgreement paginates through one agreement's product list.
+func (c *PeruComprasCrawler) scrapeAgreement(ctx context.Context, csrfToken string, ag agreementInfo, maxPages int) (int, error) {
+	desc := ag.Description
+	if len(desc) > 35 {
+		desc = desc[:35] + "…"
+	}
+	log.Printf("[Crawler] Acuerdo %s — %s", ag.Code, desc)
+
+	total := 0
+	for page := 1; ; page++ {
+		if maxPages > 0 && page > maxPages {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return total, ctx.Err()
+		default:
+		}
+
+		pageHTML, hasNext, err := c.fetchProductPage(csrfToken, ag.FilterValue, page)
+		if err != nil {
+			return total, fmt.Errorf("pág %d: %w", page, err)
+		}
+
+		fichas := parseProductCards(pageHTML, ag.Code, ag.Description)
+		for _, f := range fichas {
+			fCopy := f
+			if err := c.repo.UpsertFicha(ctx, &fCopy); err != nil {
+				log.Printf("[Crawler] error guardando ficha %s: %v", f.FichaID, err)
+			}
+			total++
+		}
+
+		if !hasNext {
+			break
+		}
+		time.Sleep(300 * time.Millisecond) // polite delay between pages
+	}
+	return total, nil
+}
+
+// fetchProductPage submits the search form for a specific agreement page.
+func (c *PeruComprasCrawler) fetchProductPage(csrfToken, filterValue string, page int) (string, bool, error) {
+	filterJSON := `["` + strings.ReplaceAll(filterValue, `"`, `\"`) + `"]`
+
+	formValues := fmt.Sprintf(
+		"__RequestVerificationToken=%s&Status=VIGENTE&Pagination.Page=%d&Pagination.LeftMostPage=1&Pagination.Paging=%d&ClientFilter.Feature=%%5B%%5D&ClientFilter.Agreement=%s&ClientFilter.Catalogue=&ClientFilter.Category=&ServerFilter.Agreement=&ServerFilter.Catalogue=&ServerFilter.Category=&SearchText=",
+		urlEncode(csrfToken),
+		page, page,
+		urlEncode(filterJSON),
 	)
-	return strings.ToUpper(strings.TrimSpace(r.Replace(s)))
+
+	req, err := http.NewRequest(http.MethodPost, catalogBaseURL+"/", strings.NewReader(formValues))
+	if err != nil {
+		return "", false, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Referer", catalogBaseURL+"/")
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return "", false, err
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", false, err
+	}
+	body := string(b)
+
+	// Check if there's a "next" page link
+	hasNext := strings.Contains(body, `data-paging="next"`)
+	return body, hasNext, nil
 }
 
-// parseRow converts a single CSV row into a ContratacionIngest.
-// Returns (row, false) if the row lacks mandatory fields.
-func parseRow(row []string, idx map[string]int) (models.ContratacionIngest, bool) {
-	get := func(keys ...string) string {
-		for _, k := range keys {
-			if i, ok := idx[k]; ok && i < len(row) {
-				return strings.TrimSpace(row[i])
+// urlEncode does minimal percent-encoding for form values.
+func urlEncode(s string) string {
+	var b strings.Builder
+	for _, c := range []byte(s) {
+		switch {
+		case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9',
+			c == '-', c == '_', c == '.', c == '~':
+			b.WriteByte(c)
+		default:
+			fmt.Fprintf(&b, "%%%02X", c)
+		}
+	}
+	return b.String()
+}
+
+// parseProductCards extracts Ficha objects from a search result HTML page.
+func parseProductCards(body, acuerdoCode, acuerdoDesc string) []models.Ficha {
+	reH4 := regexp.MustCompile(`card-title-custom[^>]*>\s*([^\n<]+?)\s*</h4>`)
+	reID := regexp.MustCompile(`<a[^>]*id="(\d+)"[^>]*class="enlace-detalles`)
+	reAttr := func(name string) *regexp.Regexp {
+		return regexp.MustCompile(`data-` + name + `="([^"]*)"`)
+	}
+	reCatalogue := reAttr("catalogue")
+	reStatus := reAttr("status")
+	reFile := reAttr("file")
+	rePubDate := reAttr("published-date")
+
+	// Split into individual card sections
+	sections := strings.Split(body, `<div class="card">`)
+	now := time.Now()
+
+	var result []models.Ficha
+	for _, sec := range sections[1:] { // skip pre-card content
+		h4m := reH4.FindStringSubmatch(sec)
+		if len(h4m) < 2 {
+			continue
+		}
+		idm := reID.FindStringSubmatch(sec)
+		if len(idm) < 2 {
+			continue
+		}
+
+		nombre := strings.TrimSpace(html.UnescapeString(h4m[1]))
+		fichaID := idm[1]
+
+		// Brand: text after " : " in header (e.g., "COMPUTADORA DE ESCRITORIO : VASTEC MULTIV RL")
+		marca := ""
+		if idx := strings.Index(nombre, " : "); idx >= 0 {
+			rest := strings.TrimSpace(nombre[idx+3:])
+			if sp := strings.Index(rest, " "); sp > 0 {
+				marca = rest[:sp]
+			} else {
+				marca = rest
 			}
 		}
-		return ""
+
+		catalogue := ""
+		if m := reCatalogue.FindStringSubmatch(sec); len(m) >= 2 {
+			catalogue = html.UnescapeString(m[1])
+		}
+
+		statusStr := "OFERTADA"
+		if m := reStatus.FindStringSubmatch(sec); len(m) >= 2 {
+			statusStr = strings.ToUpper(m[1])
+		}
+		estado := models.EstadoActiva
+		if statusStr == "SUSPENDIDA" {
+			estado = models.EstadoBaja
+		}
+
+		urlFicha := ""
+		if m := reFile.FindStringSubmatch(sec); len(m) >= 2 {
+			urlFicha = m[1]
+		}
+
+		pubDate := ""
+		if m := rePubDate.FindStringSubmatch(sec); len(m) >= 2 {
+			pubDate = strings.TrimPrefix(strings.TrimSpace(m[1]), "Fecha de publicación: ")
+		}
+
+		datosRaw := map[string]interface{}{
+			"catalogue":      catalogue,
+			"acuerdo_desc":   acuerdoDesc,
+			"published_date": pubDate,
+			"status_raw":     statusStr,
+		}
+
+		result = append(result, models.Ficha{
+			FichaID:   fichaID,
+			Nombre:    nombre,
+			Marca:     marca,
+			Acuerdo:   acuerdoCode,
+			Estado:    estado,
+			UrlFicha:  &urlFicha,
+			DatosRaw:  datosRaw,
+			CreatedAt: now,
+			UpdatedAt: now,
+		})
 	}
-
-	anio, _ := strconv.Atoi(get("ANIO", "ANO", "AÑO"))
-	mes, _ := strconv.Atoi(get("MES"))
-	if anio == 0 || mes < 1 || mes > 12 {
-		return models.ContratacionIngest{}, false
-	}
-
-	ordenes, _ := strconv.Atoi(get("NRO_ORDENES", "NUMERO_ORDENES", "N_ORDENES", "NROORDENES", "ORDENES"))
-	montoStr := strings.ReplaceAll(
-		strings.ReplaceAll(get("MONTO", "MONTO_TOTAL", "MONTOTOTAL"), ",", "."),
-		" ", "",
-	)
-	monto, _ := strconv.ParseFloat(montoStr, 64)
-
-	return models.ContratacionIngest{
-		Anio:         anio,
-		Mes:          mes,
-		Departamento: strings.ToUpper(get("DEPARTAMENTO", "REGION", "DEPARTAMENTO_REGION")),
-		Catalogo:     strings.ToUpper(get("CATALOGO", "NOMBRE_CATALOGO", "NOMBRE CATALOGO")),
-		TipoCompra:   strings.ToUpper(get("TIPO_COMPRA", "TIPOCOMPRA", "TIPO COMPRA")),
-		AcuerdoMarco: strings.ToUpper(get("ACUERDO_MARCO", "NUMERO_ACUERDO", "ACUERDO MARCO", "ACUERDOMARCO")),
-		NroOrdenes:   ordenes,
-		Monto:        monto,
-	}, true
+	return result
 }

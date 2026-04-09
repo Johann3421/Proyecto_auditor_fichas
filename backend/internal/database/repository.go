@@ -61,22 +61,21 @@ func (r *Repository) GetDashboardData(ctx context.Context, f models.DashboardFil
 func (r *Repository) queryDashboardData(ctx context.Context, f models.DashboardFilters) (*models.DashboardData, error) {
 	data := &models.DashboardData{}
 
-	// ── catalogos ────────────────────────────────────────────────────────────
+	// ── catalogos (fichas per catalogue) ─────────────────────────────────────
 	rows, err := r.pool.Query(ctx, `
-		SELECT catalogo,
-		       SUM(nro_ordenes)::INTEGER AS ordenes,
-		       SUM(monto)               AS monto,
-		       ROUND(SUM(monto)*100.0/SUM(SUM(monto)) OVER (), 2) AS percent
-		FROM contrataciones
-		WHERE ($1='' OR anio::TEXT=$1)
-		  AND ($2='' OR CEIL(mes::NUMERIC/3)::TEXT=$2)
-		  AND ($3='' OR mes::TEXT=$3)
-		  AND ($4='' OR departamento ILIKE $4)
-		  AND ($5='' OR catalogo ILIKE $5)
-		  AND ($6='' OR acuerdo_marco ILIKE $6)
-		  AND ($7='' OR tipo_compra ILIKE $7)
-		GROUP BY catalogo ORDER BY monto DESC`,
-		f.Anio, f.Trimestre, f.Mes, f.Departamento, f.Catalogo, f.AcuerdoMarco, f.TipoCompra)
+		SELECT COALESCE(datos_raw->>'catalogue', acuerdo) AS catalogo,
+		       COUNT(*)::INTEGER AS ordenes,
+		       0.0::FLOAT AS monto,
+		       ROUND(COUNT(*)*100.0/SUM(COUNT(*)) OVER(), 2) AS percent
+		FROM fichas
+		WHERE deleted_at IS NULL
+		  AND estado != 'eliminada'
+		  AND ($1='' OR acuerdo ILIKE $1)
+		  AND ($2='' OR estado::TEXT = $2)
+		  AND ($3='' OR datos_raw->>'catalogue' ILIKE $3)
+		GROUP BY COALESCE(datos_raw->>'catalogue', acuerdo)
+		ORDER BY ordenes DESC LIMIT 20`,
+		f.AcuerdoMarco, f.TipoCompra, f.Catalogo)
 	if err != nil {
 		return nil, fmt.Errorf("catalogos query: %w", err)
 	}
@@ -87,23 +86,21 @@ func (r *Repository) queryDashboardData(ctx context.Context, f models.DashboardF
 			return nil, err
 		}
 		data.TotalOrdenes += row.Ordenes
-		data.TotalMonto += row.Monto
 		data.Catalogos = append(data.Catalogos, row)
 	}
 	rows.Close()
 
-	// ── mensual ───────────────────────────────────────────────────────────────
+	// ── mensual (fichas by creation month) ────────────────────────────────────
 	mRows, err := r.pool.Query(ctx, `
-		SELECT TO_CHAR(MAKE_DATE(anio,mes,1),'TMMonth') AS mes,
-		       SUM(nro_ordenes)::FLOAT AS ordenes,
-		       SUM(monto)              AS monto
-		FROM contrataciones
-		WHERE ($1='' OR anio::TEXT=$1)
-		  AND ($2='' OR departamento ILIKE $2)
-		  AND ($3='' OR catalogo ILIKE $3)
-		  AND ($4='' OR tipo_compra ILIKE $4)
-		GROUP BY anio, mes ORDER BY anio, mes`,
-		f.Anio, f.Departamento, f.Catalogo, f.TipoCompra)
+		SELECT TO_CHAR(created_at, 'TMMonth') AS mes,
+		       COUNT(*)::FLOAT AS ordenes,
+		       0.0::FLOAT AS monto
+		FROM fichas
+		WHERE deleted_at IS NULL
+		  AND ($1='' OR EXTRACT(YEAR FROM created_at)::TEXT = $1)
+		GROUP BY TO_CHAR(created_at, 'TMMonth'), EXTRACT(MONTH FROM created_at)
+		ORDER BY EXTRACT(MONTH FROM created_at)`,
+		f.Anio)
 	if err != nil {
 		return nil, fmt.Errorf("mensual query: %w", err)
 	}
@@ -117,15 +114,12 @@ func (r *Repository) queryDashboardData(ctx context.Context, f models.DashboardF
 	}
 	mRows.Close()
 
-	// ── departamentos ─────────────────────────────────────────────────────────
+	// ── departamentos (repurposed → fichas per acuerdo_marco) ─────────────────
 	dRows, err := r.pool.Query(ctx, `
-		SELECT departamento, SUM(nro_ordenes)::INTEGER, SUM(monto)
-		FROM contrataciones
-		WHERE ($1='' OR anio::TEXT=$1)
-		  AND ($2='' OR CEIL(mes::NUMERIC/3)::TEXT=$2)
-		  AND ($3='' OR mes::TEXT=$3)
-		GROUP BY departamento ORDER BY monto DESC`,
-		f.Anio, f.Trimestre, f.Mes)
+		SELECT acuerdo, COUNT(*)::INTEGER, 0.0::FLOAT
+		FROM fichas
+		WHERE deleted_at IS NULL AND estado != 'eliminada'
+		GROUP BY acuerdo ORDER BY COUNT(*) DESC LIMIT 15`)
 	if err != nil {
 		return nil, fmt.Errorf("departamentos query: %w", err)
 	}
@@ -139,15 +133,13 @@ func (r *Repository) queryDashboardData(ctx context.Context, f models.DashboardF
 	}
 	dRows.Close()
 
-	// ── tipo compra ───────────────────────────────────────────────────────────
+	// ── tipo compra (repurposed → fichas by estado) ───────────────────────────
 	colors := []string{"#01B8AA", "#374649", "#FD625E", "#F2C80F", "#5F6B6D"}
 	tRows, err := r.pool.Query(ctx, `
-		SELECT tipo_compra, SUM(monto)
-		FROM contrataciones
-		WHERE ($1='' OR anio::TEXT=$1)
-		  AND ($2='' OR departamento ILIKE $2)
-		GROUP BY tipo_compra ORDER BY monto DESC`,
-		f.Anio, f.Departamento)
+		SELECT estado::TEXT, COUNT(*)::FLOAT
+		FROM fichas
+		WHERE deleted_at IS NULL
+		GROUP BY estado ORDER BY COUNT(*) DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("tipo_compra query: %w", err)
 	}
@@ -166,22 +158,26 @@ func (r *Repository) queryDashboardData(ctx context.Context, f models.DashboardF
 	}
 	tRows.Close()
 
+	// totals
+	_ = r.pool.QueryRow(ctx, `
+		SELECT COUNT(*)::INTEGER FROM fichas WHERE deleted_at IS NULL AND estado != 'eliminada'`,
+	).Scan(&data.TotalOrdenes)
+
 	// ── filter options ────────────────────────────────────────────────────────
 	var opts models.FilterOptions
-	opts.Trimestres = []string{"1", "2", "3", "4"}
-	opts.Meses = []string{
-		"enero","febrero","marzo","abril","mayo","junio",
-		"julio","agosto","septiembre","octubre","noviembre","diciembre",
-	}
 	fo := r.pool.QueryRow(ctx, `
 		SELECT
-		  ARRAY_AGG(DISTINCT anio::TEXT ORDER BY anio::TEXT DESC) FILTER (WHERE anio IS NOT NULL),
-		  ARRAY_AGG(DISTINCT departamento ORDER BY departamento)   FILTER (WHERE departamento IS NOT NULL),
-		  ARRAY_AGG(DISTINCT catalogo ORDER BY catalogo)           FILTER (WHERE catalogo IS NOT NULL),
-		  ARRAY_AGG(DISTINCT acuerdo_marco ORDER BY acuerdo_marco) FILTER (WHERE acuerdo_marco IS NOT NULL),
-		  ARRAY_AGG(DISTINCT tipo_compra ORDER BY tipo_compra)     FILTER (WHERE tipo_compra IS NOT NULL)
-		FROM contrataciones`)
-	_ = fo.Scan(&opts.Anios, &opts.Departamentos, &opts.Catalogos, &opts.AcuerdosMarco, &opts.TiposCompra)
+		  ARRAY_AGG(DISTINCT EXTRACT(YEAR FROM created_at)::TEXT
+		            ORDER BY EXTRACT(YEAR FROM created_at)::TEXT DESC)
+		            FILTER (WHERE created_at IS NOT NULL),
+		  ARRAY_AGG(DISTINCT acuerdo ORDER BY acuerdo)
+		            FILTER (WHERE acuerdo IS NOT NULL),
+		  ARRAY_AGG(DISTINCT datos_raw->>'catalogue' ORDER BY datos_raw->>'catalogue')
+		            FILTER (WHERE datos_raw->>'catalogue' IS NOT NULL),
+		  ARRAY_AGG(DISTINCT estado::TEXT ORDER BY estado::TEXT)
+		            FILTER (WHERE estado IS NOT NULL)
+		FROM fichas WHERE deleted_at IS NULL AND estado != 'eliminada'`)
+	_ = fo.Scan(&opts.Anios, &opts.AcuerdosMarco, &opts.Catalogos, &opts.TiposCompra)
 	data.FilterOptions = opts
 
 	return data, nil
@@ -204,4 +200,19 @@ func (r *Repository) UpsertContrataciones(ctx context.Context, rows []models.Con
 	return nil
 }
 
+// UpsertFicha inserts or updates a single ficha scraped from buscadorcatalogos.perucompras.gob.pe.
+func (r *Repository) UpsertFicha(ctx context.Context, f *models.Ficha) error {
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO fichas (ficha_id, nombre, marca, acuerdo, estado, url_ficha, datos_raw)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (ficha_id) DO UPDATE
+		SET nombre    = EXCLUDED.nombre,
+		    marca     = EXCLUDED.marca,
+		    estado    = EXCLUDED.estado,
+		    url_ficha = EXCLUDED.url_ficha,
+		    datos_raw = EXCLUDED.datos_raw,
+		    updated_at = NOW()`,
+		f.FichaID, f.Nombre, f.Marca, f.Acuerdo, f.Estado, f.UrlFicha, f.DatosRaw)
+	return err
+}
 
