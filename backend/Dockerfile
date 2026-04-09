@@ -1,8 +1,14 @@
 # Stage 1: compilar
 FROM golang:1.22-alpine AS builder
 WORKDIR /app
-COPY go.mod go.sum* ./
+
+# Instalar git (requerido por go mod para algunos módulos)
+RUN apk add --no-cache git
+
+COPY go.mod ./
+# go mod tidy genera el go.sum correcto descargando las dependencias
 RUN go mod download
+
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /ceam-server ./cmd/server
 

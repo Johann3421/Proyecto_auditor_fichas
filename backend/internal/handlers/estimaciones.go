@@ -1,5 +1,11 @@
 package handlers
 
-import "net/http"
+import (
+	"encoding/json"
+	"net/http"
+)
 
-func EstimacionesHandler(w http.ResponseWriter, r *http.Request) {}
+func EstimacionesHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode([]interface{}{})
+}
