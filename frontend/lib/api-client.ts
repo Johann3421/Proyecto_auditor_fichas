@@ -1,12 +1,13 @@
 // Client para conectar con el backend de Go
 // En producción, usamos rutas relativas para que Traefik gestione el ruteo interno
 // y evitar errores de Mixed Content (SSL) o CORS.
-const isProd = process.env.NODE_ENV === 'production';
-const baseUrl = isProd ? '' : (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080');
 
 async function fetchWithConfig(url: string, config: RequestInit) {
-  // Aseguramos que la URL empiece con / si usamos baseUrl vacía
-  const fullUrl = `${baseUrl}${url}`;
+  // Cuando Next.js (SSR) pide datos en el servidor, usamos el nombre del contenedor de docker
+  // Cuando se ejecuta en el cliente (Browser), usamos una url relativa para que lo rutee Traefik
+  const isBrowser = typeof window !== 'undefined';
+  const backendInternalUrl = process.env.NEXT_PUBLIC_API_URL || 'http://backend:8080';
+  const fullUrl = isBrowser ? url : `${backendInternalUrl}${url}`;
   
   const response = await fetch(fullUrl, {
     ...config,
