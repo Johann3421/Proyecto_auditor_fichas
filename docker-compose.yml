@@ -1,0 +1,69 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: ceam-postgres
+    environment:
+      POSTGRES_USER: ceam
+      POSTGRES_PASSWORD: ceam_dev_password
+      POSTGRES_DB: ceam_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - ceam-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ceam -d ceam_db"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: ceam-backend
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: postgres://ceam:ceam_dev_password@postgres:5432/ceam_db?sslmode=disable
+      PORT: "8080"
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./backend:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - ceam-network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: dev
+    container_name: ceam-frontend
+    env_file:
+      - ./frontend/.env
+    environment:
+      NEXT_PUBLIC_API_URL: http://backend:8080
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - backend
+    networks:
+      - ceam-network
+
+volumes:
+  pgdata:
+
+networks:
+  ceam-network:
+    driver: bridge

@@ -1,0 +1,10 @@
+DROP TABLE IF EXISTS notificaciones CASCADE;
+DROP TABLE IF EXISTS reportes_semanales CASCADE;
+DROP TABLE IF EXISTS estimaciones_marca CASCADE;
+DROP TABLE IF EXISTS historial_fichas CASCADE;
+DROP TABLE IF EXISTS fichas CASCADE;
+
+DROP TYPE IF EXISTS notificacion_tipo_enum CASCADE;
+DROP TYPE IF EXISTS fichas_estado_enum CASCADE;
+
+DROP FUNCTION IF EXISTS set_updated_at() CASCADE;
