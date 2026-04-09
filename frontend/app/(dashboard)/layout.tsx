@@ -5,12 +5,13 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import Ribbon from '@/components/ribbon/Ribbon';
 import NotificationDrawer from '@/components/notifications/NotificationDrawer';
-import { Monitor, Calculator, BellIcon } from 'lucide-react';
+import { Monitor, Calculator, BellIcon, BarChart2 } from 'lucide-react';
 
 const navItems = [
   { name: 'Fichas', path: '/fichas', icon: Monitor },
   { name: 'Estimaciones', path: '/estimaciones', icon: Calculator },
   { name: 'Notificaciones', path: '/notificaciones', icon: BellIcon },
+  { name: 'Reportes', path: '/reportes', icon: BarChart2 },
 ];
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {

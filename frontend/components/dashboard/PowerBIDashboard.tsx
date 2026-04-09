@@ -1,7 +1,8 @@
 "use client";
 
-import React, { useMemo } from "react";
-import { ArrowLeft, ArrowRight, MapPin } from "lucide-react";
+import React, { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { ArrowLeft, ArrowRight, RotateCcw } from "lucide-react";
 import { AgGridReact } from "ag-grid-react";
 import { ColDef, ModuleRegistry, AllCommunityModule } from "ag-grid-community";
 import {
@@ -16,11 +17,330 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
+import { apiClient } from "@/lib/api-client";
+import { queryKeys } from "@/lib/query-keys";
 
 ModuleRegistry.registerModules([AllCommunityModule]);
 
-// Data Mocks para emular la vista real de PeruCompras en PowerBI
-const mapData = [
+// ── Types ──────────────────────────────────────────────────────────────────────
+interface CatalogoRow  { catalogo: string; ordenes: number; monto: number; percent: number }
+interface MonthlyRow   { mes: string; ordenes: number; monto: number }
+interface DeptRow      { nombre: string; ordenes: number; monto: number }
+interface TipoRow      { tipo: string; monto: number; color: string }
+interface FilterOptions {
+  anios: string[]; trimestres: string[]; meses: string[];
+  departamentos: string[]; catalogos: string[];
+  acuerdos_marco: string[]; tipos_compra: string[];
+}
+interface DashboardData {
+  catalogos: CatalogoRow[];
+  mensual: MonthlyRow[];
+  departamentos: DeptRow[];
+  tipos_compra: TipoRow[];
+  total_ordenes: number;
+  total_monto: number;
+  filter_options: FilterOptions;
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
+function fmtMonto(n: number) {
+  return n.toLocaleString("es-PE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function fmtMillones(n: number) {
+  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(2)} mil M`;
+  if (n >= 1_000_000)     return `${(n / 1_000_000).toFixed(2)} M`;
+  return String(n);
+}
+
+// ── Component ──────────────────────────────────────────────────────────────────
+export default function PowerBIDashboard() {
+  const [filters, setFilters] = useState<Record<string, string>>({
+    anio: "", trimestre: "", mes: "",
+    departamento: "", catalogo: "", acuerdo_marco: "", tipo_compra: "",
+  });
+
+  const { data, isLoading } = useQuery<DashboardData>({
+    queryKey: queryKeys.dashboard(filters),
+    queryFn: () => {
+      const params = new URLSearchParams(
+        Object.entries(filters).filter(([, v]) => v !== "")
+      ).toString();
+      return apiClient.get(`/api/v1/reportes${params ? "?" + params : ""}`);
+    },
+    staleTime: 60_000,
+  });
+
+  const opts: FilterOptions = data?.filter_options ?? {
+    anios: [], trimestres: ["1","2","3","4"],
+    meses: ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"],
+    departamentos: [], catalogos: [], acuerdos_marco: [], tipos_compra: [],
+  };
+
+  function setFilter(key: string, val: string) {
+    setFilters(prev => ({ ...prev, [key]: val }));
+  }
+  function resetFilters() {
+    setFilters({ anio: "", trimestre: "", mes: "", departamento: "", catalogo: "", acuerdo_marco: "", tipo_compra: "" });
+  }
+
+  // ── AG-Grid columns ────────────────────────────────────────────────────────
+  const colDefs: ColDef[] = useMemo(() => [
+    {
+      headerName: "Catálogos Electrónicos", field: "catalogo", flex: 3,
+      filter: "agTextColumnFilter",
+      cellStyle: { fontSize: "11px" },
+    },
+    {
+      headerName: "Nro Ordenes", field: "ordenes", width: 120,
+      cellClass: "text-right",
+      cellStyle: { fontSize: "11px" },
+      valueFormatter: (p: any) => Number(p.value).toLocaleString("es-PE"),
+    },
+    {
+      headerName: "Monto Contratado", field: "monto", flex: 2,
+      cellStyle: { fontSize: "11px" },
+      cellRenderer: (p: any) => (
+        <div className="relative h-full flex items-center justify-end pr-1">
+          <div
+            className="absolute left-0 top-1 bottom-1 bg-[#01B8AA] opacity-25 rounded-sm"
+            style={{ width: `${Math.min(100, (p.value / (data?.total_monto ?? 1)) * 450)}%` }}
+          />
+          <span className="relative z-10 text-right">{fmtMonto(p.value)}</span>
+        </div>
+      ),
+    },
+    {
+      headerName: "% M.C.", field: "percent", width: 80,
+      cellClass: "text-right",
+      cellStyle: { fontSize: "11px" },
+      valueFormatter: (p: any) => `${Number(p.value).toFixed(2)}%`,
+    },
+  ], [data?.total_monto]);
+
+  const catalogos: CatalogoRow[] = data?.catalogos ?? [];
+  const mensual:   MonthlyRow[]  = data?.mensual ?? [];
+  const deptos:    DeptRow[]     = data?.departamentos ?? [];
+  const tipos:     TipoRow[]     = data?.tipos_compra ?? [];
+  const maxDeptMonto = Math.max(...deptos.map(d => d.monto), 1);
+
+  return (
+    <div className="flex flex-col h-full w-full bg-[#f4f4f4] font-sans overflow-hidden">
+
+      {/* ── Header ─────────────────────────────────────────────────────────── */}
+      <div className="h-11 bg-white flex items-center justify-between px-6 border-b border-gray-200 shrink-0 shadow-sm">
+        <ArrowLeft className="text-gray-400 w-5 h-5 cursor-pointer hover:text-[#01B8AA] transition-colors" />
+        <h1 className="text-sm font-bold text-gray-700 tracking-widest uppercase">
+          CONTRATACIONES POR DEPARTAMENTO
+        </h1>
+        <ArrowRight className="text-gray-400 w-5 h-5 cursor-pointer hover:text-[#01B8AA] transition-colors" />
+      </div>
+
+      <div className="flex flex-1 overflow-hidden">
+
+        {/* ── Sidebar Filters ─────────────────────────────────────────────── */}
+        <aside className="w-52 bg-white border-r border-gray-200 flex flex-col gap-3 p-3 shrink-0 overflow-y-auto shadow-sm z-10">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">Filtros</span>
+            <button onClick={resetFilters} title="Limpiar filtros"
+              className="text-gray-400 hover:text-[#01B8AA] transition-colors">
+              <RotateCcw className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          <SelectFilter label="Año"               value={filters.anio}         onChange={v => setFilter("anio", v)}          options={opts.anios} />
+          <SelectFilter label="Trimestre"          value={filters.trimestre}    onChange={v => setFilter("trimestre", v)}     options={opts.trimestres} />
+          <SelectFilter label="Mes"                value={filters.mes}          onChange={v => setFilter("mes", v)}           options={opts.meses} />
+          <SelectFilter label="Departamento"       value={filters.departamento} onChange={v => setFilter("departamento", v)} options={opts.departamentos} />
+          <SelectFilter label="Catálogo Electrónico" value={filters.catalogo}  onChange={v => setFilter("catalogo", v)}      options={opts.catalogos} />
+          <SelectFilter label="Acuerdo Marco"      value={filters.acuerdo_marco} onChange={v => setFilter("acuerdo_marco", v)} options={opts.acuerdos_marco} />
+          <SelectFilter label="Tipo de Compra"     value={filters.tipo_compra}  onChange={v => setFilter("tipo_compra", v)}  options={opts.tipos_compra} />
+        </aside>
+
+        {/* ── Main ───────────────────────────────────────────────────────── */}
+        <div className="flex-1 overflow-auto p-2 grid grid-cols-12 grid-rows-[auto_1fr_220px] gap-2">
+
+          {/* ── Departamentos (col 1-4, rows 1-2) ─────────────────── */}
+          <div className="col-span-12 xl:col-span-4 row-span-2 bg-white shadow-sm border border-gray-100 flex flex-col overflow-hidden rounded-sm">
+            <h3 className="text-[#004696] text-center font-semibold text-xs py-2 border-b border-gray-100 shrink-0">
+              Monto contratado por departamento
+            </h3>
+            <div className="flex-1 overflow-y-auto px-3 py-2 space-y-1.5">
+              {isLoading
+                ? Array.from({ length: 8 }).map((_, i) => (
+                    <div key={i} className="h-7 bg-gray-100 animate-pulse rounded" />
+                  ))
+                : deptos.map((d) => (
+                    <div key={d.nombre}
+                      className="flex items-center gap-2 cursor-pointer hover:bg-[#f0fafb] rounded px-1 py-0.5 transition-colors group"
+                      onClick={() => setFilter("departamento", filters.departamento === d.nombre ? "" : d.nombre)}
+                    >
+                      <span className={`text-[10px] w-28 shrink-0 truncate font-medium ${filters.departamento === d.nombre ? "text-[#01B8AA]" : "text-gray-700"}`}>
+                        {d.nombre}
+                      </span>
+                      <div className="flex-1 bg-gray-100 h-3.5 rounded-sm overflow-hidden">
+                        <div
+                          className="h-full bg-[#01B8AA] rounded-sm transition-all"
+                          style={{ width: `${(d.monto / maxDeptMonto) * 100}%`, opacity: filters.departamento === d.nombre ? 1 : 0.7 }}
+                        />
+                      </div>
+                      <span className="text-[9px] text-gray-500 w-16 text-right shrink-0">
+                        {fmtMillones(d.monto)}
+                      </span>
+                    </div>
+                  ))
+              }
+            </div>
+            <p className="text-[10px] text-center text-gray-400 py-1.5 italic border-t border-gray-100 shrink-0">
+              Haga clic en un departamento para filtrar
+            </p>
+          </div>
+
+          {/* ── Tabla Catálogos (col 5-12, rows 1-2) ─────────────── */}
+          <div className="col-span-12 xl:col-span-8 row-span-2 bg-white shadow-sm border border-gray-100 flex flex-col overflow-hidden rounded-sm">
+            <h3 className="text-[#004696] text-center font-semibold text-xs py-2 border-b border-gray-100 shrink-0">
+              Número de órdenes y Monto contratado por Catálogo Electrónico
+            </h3>
+            <div className="flex-1 ag-theme-alpine w-full min-h-0">
+              <AgGridReact
+                theme="legacy"
+                columnDefs={colDefs}
+                rowData={catalogos}
+                domLayout="normal"
+                headerHeight={28}
+                rowHeight={26}
+                defaultColDef={{ resizable: true, sortable: true }}
+                loadingOverlayComponent={() => (
+                  <div className="flex items-center justify-center h-full text-gray-400 text-xs">Cargando...</div>
+                )}
+                loading={isLoading}
+              />
+            </div>
+            <div className="flex justify-between items-center px-4 py-1 border-t-2 border-[#01B8AA] bg-gray-50 shrink-0">
+              <span className="text-xs font-bold text-gray-800">Total</span>
+              <div className="flex gap-8 text-xs font-bold text-gray-800">
+                <span>{(data?.total_ordenes ?? 0).toLocaleString("es-PE")}</span>
+                <span>{fmtMonto(data?.total_monto ?? 0)}</span>
+                <span>100,00%</span>
+              </div>
+            </div>
+          </div>
+
+          {/* ── Donut Tipo Compra (row 3, col 1-4) ────────────────── */}
+          <div className="col-span-12 xl:col-span-4 bg-white shadow-sm border border-gray-100 flex flex-col overflow-hidden rounded-sm">
+            <h3 className="text-[#004696] text-center font-semibold text-xs py-2 border-b border-gray-100 shrink-0">
+              Monto contratado por tipo de compra
+            </h3>
+            <div className="flex-1 min-h-0 flex items-center">
+              <ResponsiveContainer width="55%" height="100%">
+                <PieChart>
+                  <Pie data={tipos} cx="50%" cy="50%" innerRadius={40} outerRadius={68}
+                    dataKey="monto" stroke="none">
+                    {tipos.map((t, i) => (
+                      <Cell key={i} fill={t.color} />
+                    ))}
+                  </Pie>
+                  <Tooltip formatter={(v: number) => fmtMillones(v)} />
+                </PieChart>
+              </ResponsiveContainer>
+              <div className="flex-1 flex flex-col gap-1.5 pr-3">
+                {tipos.map((t) => (
+                  <div key={t.tipo} className="flex items-center gap-2">
+                    <div className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ backgroundColor: t.color }} />
+                    <span className="text-[10px] text-gray-600 truncate">{t.tipo}</span>
+                    <span className="text-[10px] font-semibold text-gray-800 ml-auto shrink-0">
+                      {fmtMillones(t.monto)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* ── Bar Ordenes/mes (row 3, col 5-8) ──────────────────── */}
+          <div className="col-span-12 xl:col-span-4 bg-white shadow-sm border border-gray-100 flex flex-col overflow-hidden rounded-sm">
+            <h3 className="text-[#004696] text-center font-semibold text-xs py-2 border-b border-gray-100 shrink-0">
+              Número de órdenes por meses
+            </h3>
+            <div className="flex-1 min-h-0 pl-1 pr-3 pb-1">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={mensual} margin={{ top: 4, right: 0, bottom: 24, left: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#eee" />
+                  <XAxis dataKey="mes" tick={{ fontSize: 9 }}
+                    tickFormatter={(v: string) => v.slice(0, 3)}
+                    angle={-35} textAnchor="end" />
+                  <YAxis tick={{ fontSize: 9 }} width={36} tickFormatter={fmtMillones} />
+                  <Tooltip
+                    formatter={(v: number) => [`${v} mill.`, "Órdenes"]}
+                    labelFormatter={(l: string) => l}
+                  />
+                  <Bar dataKey="ordenes" fill="#01B8AA" barSize={14} radius={[2, 2, 0, 0]}
+                    label={{ position: "inside", fill: "#fff", fontSize: 8,
+                      formatter: (v: number) => v >= 0.05 ? `${v.toFixed(2)}` : "" }} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          {/* ── Bar Monto/mes (row 3, col 9-12) ───────────────────── */}
+          <div className="col-span-12 xl:col-span-4 bg-white shadow-sm border border-gray-100 flex flex-col overflow-hidden rounded-sm">
+            <h3 className="text-[#004696] text-center font-semibold text-xs py-2 border-b border-gray-100 shrink-0">
+              Monto contratado por meses
+            </h3>
+            <div className="flex-1 min-h-0 pl-1 pr-3 pb-1">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={mensual} margin={{ top: 4, right: 0, bottom: 24, left: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#eee" />
+                  <XAxis dataKey="mes" tick={{ fontSize: 9 }}
+                    tickFormatter={(v: string) => v.slice(0, 3)}
+                    angle={-35} textAnchor="end" />
+                  <YAxis tick={{ fontSize: 9 }} width={42} tickFormatter={fmtMillones} />
+                  <Tooltip
+                    formatter={(v: number) => [`${fmtMonto(v)} mill.`, "Monto"]}
+                  />
+                  <Bar dataKey="monto" fill="#01B8AA" barSize={14} radius={[2, 2, 0, 0]}
+                    label={{ position: "inside", fill: "#fff", fontSize: 7,
+                      formatter: (v: number) => v >= 500 ? `${(v/1000).toFixed(0)}k` : "" }} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Subcomponents ──────────────────────────────────────────────────────────────
+function SelectFilter({
+  label, value, onChange, options,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  options: string[];
+}) {
+  return (
+    <div className="flex flex-col gap-0.5 w-full">
+      <label className="text-[10px] font-semibold text-gray-500 uppercase tracking-wide">
+        {label}
+      </label>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full text-[11px] p-1 border border-gray-200 rounded shadow-xs
+                   focus:outline-none focus:border-[#01B8AA] text-gray-700 bg-white
+                   transition-colors"
+      >
+        <option value="">Todas</option>
+        {options.map((o) => (
+          <option key={o} value={o}>{o}</option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
   { name: "LIMA", value: 14000 },
   { name: "CUSCO", value: 4000 },
   { name: "AREQUIPA", value: 3000 },

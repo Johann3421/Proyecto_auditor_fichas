@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
@@ -12,33 +13,39 @@ import (
 	"github.com/Johann3421/Proyecto_auditor_fichas/backend/internal/database"
 	"github.com/Johann3421/Proyecto_auditor_fichas/backend/internal/handlers"
 	mymiddleware "github.com/Johann3421/Proyecto_auditor_fichas/backend/internal/middleware"
+	"github.com/Johann3421/Proyecto_auditor_fichas/backend/internal/services"
 )
 
 func main() {
 	log.Println("CEAM Auditor (Go Backend) - Starting up...")
 
-	var err error
-
 	// 1. Conectar a Base de Datos
+	var db *database.DB
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
-		log.Println("WARNING: DATABASE_URL is not set. Using fallback for init.")
+		log.Println("WARNING: DATABASE_URL is not set. Running with mock data fallback.")
 	} else {
-		// Validar BD (La función real debe manejar errores o reintentos)
-		db, errConn := database.ConnectDB(dbURL)
+		var errConn error
+		db, errConn = database.ConnectDB(dbURL)
 		if errConn != nil {
 			log.Fatalf("Could not connect to database: %v", errConn)
 		}
 		defer db.Close()
 
 		// 2. Correr Migraciones
-		err = database.RunMigrations(dbURL)
-		if err != nil {
+		if err := database.RunMigrations(dbURL); err != nil {
 			log.Printf("Migration notice: %v", err)
 		}
 	}
 
-	// 3. Inicializar Router Chi
+	// 3. Handlers & Crawler Setup
+	repo := database.NewRepository(db)
+	handlers.InitHandlers(repo)
+
+	crawler := services.NewPeruComprasCrawler(repo)
+	go crawler.RunBackgroundMockCrawler(context.Background())
+
+	// 4. Inicializar Router Chi
 	r := chi.NewRouter()
 
 	// Middlewares
