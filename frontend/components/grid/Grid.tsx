@@ -61,7 +61,7 @@ export default function Grid({ onGridReady }: GridProps) {
   }, []);
 
   const rowSelection = useMemo(() => { 
-    return { mode: 'multiRow', checkboxes: true, headerCheckbox: true };
+    return { mode: 'multiRow', checkboxes: true };
   }, []);
 
   return (
