@@ -17,10 +17,6 @@ import (
 	"github.com/Johann3421/Proyecto_auditor_fichas/backend/internal/models"
 )
 
-// Known base URL for PeruCompras open-data portal.
-// Override per-year CSV via CEAM_DATA_URL env var.
-const peruComprasBaseURL = "https://datosabiertos.perucompras.gob.pe"
-
 type PeruComprasCrawler struct {
 	client *http.Client
 	repo   *database.Repository
@@ -37,9 +33,13 @@ func NewPeruComprasCrawler(dbRepo *database.Repository) *PeruComprasCrawler {
 	}
 }
 
-// RunScheduledIngestion ingests PeruCompras open-data CSV into the contrataciones table.
-// It is launched as a goroutine on server startup. It ingests the current year
-// and the two preceding years. Set CEAM_DATA_URL to override the auto-built URL.
+// RunScheduledIngestion ingests data from the URL set in CEAM_DATA_URL.
+// Set this environment variable in Dokploy to a publicly accessible CSV URL
+// (e.g. a Google Drive / GitHub / S3 direct-download link for the PeruCompras
+// ordenes de catálogo electrónico export).
+//
+// If CEAM_DATA_URL is not set the function logs a warning and returns — no
+// attempt is made to connect to any external host.
 func (c *PeruComprasCrawler) RunScheduledIngestion(ctx context.Context) {
 	if c.repo == nil {
 		log.Println("[Ingestor] Sin repositorio DB — ingesta omitida.")
@@ -47,22 +47,15 @@ func (c *PeruComprasCrawler) RunScheduledIngestion(ctx context.Context) {
 	}
 
 	customURL := os.Getenv("CEAM_DATA_URL")
-	if customURL != "" {
-		log.Printf("[Ingestor] Ingiriendo desde CEAM_DATA_URL: %s", customURL)
-		if err := c.IngestCSV(ctx, customURL); err != nil {
-			log.Printf("[Ingestor] error en CEAM_DATA_URL: %v", err)
-		}
+	if customURL == "" {
+		log.Println("[Ingestor] CEAM_DATA_URL no configurado. " +
+			"Configura esta variable en Dokploy apuntando al CSV de ordenes de catálogo de PeruCompras.")
 		return
 	}
 
-	// Default: try the PeruCompras open-data portal for current + 2 previous years.
-	currentYear := time.Now().Year()
-	for _, year := range []int{currentYear, currentYear - 1, currentYear - 2} {
-		csvURL := buildPeruComprasURL(year)
-		log.Printf("[Ingestor] Ingiriendo año %d desde %s", year, csvURL)
-		if err := c.IngestCSV(ctx, csvURL); err != nil {
-			log.Printf("[Ingestor] error ingiriendo año %d: %v", year, err)
-		}
+	log.Printf("[Ingestor] Ingiriendo desde CEAM_DATA_URL: %s", customURL)
+	if err := c.IngestCSV(ctx, customURL); err != nil {
+		log.Printf("[Ingestor] error: %v", err)
 	}
 }
 
@@ -146,15 +139,6 @@ func (c *PeruComprasCrawler) IngestCSV(ctx context.Context, csvURL string) error
 	}
 	log.Printf("[Ingestor] %d filas ingiridas desde %s", ingested, csvURL)
 	return nil
-}
-
-// buildPeruComprasURL returns the PeruCompras open-data CSV download URL for a given year.
-// Update this pattern if PeruCompras changes their portal URL structure.
-func buildPeruComprasURL(year int) string {
-	return fmt.Sprintf(
-		"%s/dataset/ordenes-de-catalogo-electronico/resource/%d/download/ordenes_catalogo_%d.csv",
-		peruComprasBaseURL, year, year,
-	)
 }
 
 // buildColIndex maps normalised header names to their CSV column index.
