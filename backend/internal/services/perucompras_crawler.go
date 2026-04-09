@@ -2,7 +2,6 @@ package services
 
 import (
 	"context"
-	"encoding/json"
 	"log"
 	"net/http"
 	"net/http/cookiejar"
