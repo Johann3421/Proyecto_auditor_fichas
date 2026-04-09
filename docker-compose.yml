@@ -27,7 +27,7 @@ services:
       DATABASE_URL: postgres://ceam:ceam_dev_password@postgres:5432/ceam_db?sslmode=disable
       PORT: "8080"
     ports:
-      - "8080:8080"
+      - "8086:8080"
     depends_on:
       postgres:
         condition: service_healthy
