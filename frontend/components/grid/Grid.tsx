@@ -40,11 +40,11 @@ const estimatedPriceRenderer = (params: any) => {
 export default function Grid({ onGridReady }: GridProps) {
 
   const colDefs: ColDef[] = useMemo(() => [
-    { headerName: 'ID', field: 'ficha_id', width: 120, filter: 'agTextColumnFilter', checkboxSelection: true },
+    { headerName: 'ID', field: 'ficha_id', width: 120, filter: 'agTextColumnFilter' },
     { headerName: 'Nombre', field: 'nombre', width: 250, filter: 'agTextColumnFilter' },
-    { headerName: 'Marca', field: 'marca', width: 150, filter: 'agSetColumnFilter' },
-    { headerName: 'Acuerdo', field: 'acuerdo', width: 90, filter: 'agSetColumnFilter' },
-    { headerName: 'Estado', field: 'estado', width: 120, filter: 'agSetColumnFilter', cellRenderer: statusBadgeRenderer },
+    { headerName: 'Marca', field: 'marca', width: 150, filter: 'agTextColumnFilter' },
+    { headerName: 'Acuerdo', field: 'acuerdo', width: 90, filter: 'agTextColumnFilter' },
+    { headerName: 'Estado', field: 'estado', width: 120, filter: 'agTextColumnFilter', cellRenderer: statusBadgeRenderer },
     { headerName: 'Precio Oficial', field: 'precio_oficial', width: 130, valueFormatter: currencyFormatter },
     { headerName: 'Precio Estimado', field: 'precio_estimado', width: 130, cellRenderer: estimatedPriceRenderer },
     { headerName: 'Proveedor', field: 'proveedor', width: 200, filter: 'agTextColumnFilter' },
@@ -60,16 +60,21 @@ export default function Grid({ onGridReady }: GridProps) {
     };
   }, []);
 
+  const rowSelection = useMemo(() => { 
+    return { mode: 'multiRow', checkboxes: true, headerCheckbox: true };
+  }, []);
+
   return (
     <div className="ag-theme-alpine w-full h-full" style={{ "--ag-font-family": "Inter, sans-serif" } as any}>
       <AgGridReact
+        theme="legacy"
         columnDefs={colDefs}
         defaultColDef={defaultColDef}
         rowModelType="infinite"
         cacheBlockSize={100}
         maxBlocksInCache={10}
         onGridReady={onGridReady}
-        rowSelection="multiple"
+        rowSelection={rowSelection as any}
         animateRows={true}
         domLayout="normal"
       />
