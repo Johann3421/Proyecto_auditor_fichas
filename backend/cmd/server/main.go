@@ -17,15 +17,17 @@ import (
 func main() {
 	log.Println("CEAM Auditor (Go Backend) - Starting up...")
 
+	var err error
+
 	// 1. Conectar a Base de Datos
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
 		log.Println("WARNING: DATABASE_URL is not set. Using fallback for init.")
 	} else {
 		// Validar BD (La función real debe manejar errores o reintentos)
-		db, err := database.ConnectDB(dbURL)
-		if err != nil {
-			log.Fatalf("Could not connect to database: %v", err)
+		db, errConn := database.ConnectDB(dbURL)
+		if errConn != nil {
+			log.Fatalf("Could not connect to database: %v", errConn)
 		}
 		defer db.Close()
 

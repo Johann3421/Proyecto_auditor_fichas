@@ -6,7 +6,7 @@ WORKDIR /app
 RUN apk add --no-cache git
 
 COPY go.mod ./
-# go mod tidy genera el go.sum correcto descargando las dependencias
+# go mod download requiere un entorno limpio
 RUN go mod download
 
 COPY . .
@@ -17,5 +17,7 @@ FROM alpine:3.19
 RUN apk --no-cache add ca-certificates tzdata
 WORKDIR /app
 COPY --from=builder /ceam-server /ceam-server
+# Copiar las migraciones necesarias para el arranque
+COPY --from=builder /app/migrations ./migrations
 EXPOSE 8080
 CMD ["/ceam-server"]
