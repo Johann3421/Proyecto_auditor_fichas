@@ -87,14 +87,21 @@ Si los logs de Dokploy dentro de tu `ceam-backend` dicen `"Database migrations a
 
 ## 🌐 PASO 6: Dominios, DNS y Seguridad de Red (TLS/SSL)
 
-Para que accedas a la nube sin el odioso `localhosts` o alertas del navegador de "Inseguro":
+Dado que Dokploy te muestra una pestaña llamada **Domains** (como viste en tu panel), debes configurar ahí tus dominios reales:
 
-1. Entra a las configuraciones DNS de tu proveedor (Cloudflare, AWS, GoDaddy, Hostinger).
+1. Entra a tu proveedor de DNS (Cloudflare, GoDaddy, Hostinger).
 2. Crea **dos registros tipo A** y apúntalos a la **IP de tu servidor Dokploy**:
-   - Tipo A - `auditor.tudominio.com` -> `IP Pública del Cloud VPS`
-   - Tipo A - `api-auditor.tudominio.com` -> `IP Pública del Cloud VPS`
-3. Como usamos Traefik Rules automáticos en el `docker-compose.prod.yml`, Dokploy ha ruteado per-se la entrada de las requests.
-4. (Importante) Ve a la sección **Traefik/Certificates** de Dokploy y emite un Certificado `Let's Encrypt` para estos dos subdominios, eso dotará la infraestructura de Certificados Válidos SSL renovados por siempre para que Go y Next puedan hacer sus POST tranquilamente bajo criptografía del TLS.
+   - `auditor.tudominio.com` -> `IP Pública`
+   - `api-auditor.tudominio.com` -> `IP Pública`
+3. Ve a Dokploy -> Tu Aplicación -> Pestaña **Domains**.
+4. Dale a **Add Domain** (Backend):
+   - **Service:** `ceam-backend`
+   - **Port:** `8080` (Usa siempre el puerto interno aquí).
+   - **Domain:** `api-auditor.tudominio.com`
+5. Dale a **Add Domain** (Frontend):
+   - **Service:** `ceam-frontend`
+   - **Port:** `3000`
+   - **Domain:** `auditor.tudominio.com`
 
 ---
 
