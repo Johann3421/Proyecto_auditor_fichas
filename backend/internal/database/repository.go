@@ -118,17 +118,21 @@ func (r *Repository) queryDashboardData(ctx context.Context, f models.DashboardF
 	}
 	mRows.Close()
 
-	// ── departamentos (procurement orders per region from contrataciones) ─────────
+	// ── departamentos (fichas per delivery region from crawler data) ─────────
 	dRows, err := r.pool.Query(ctx, `
-		SELECT COALESCE(departamento, 'Sin departamento'),
-		       SUM(nro_ordenes)::INTEGER,
-		       SUM(monto)::FLOAT
-		FROM contrataciones
-		WHERE departamento IS NOT NULL
-		  AND ($1='' OR departamento ILIKE $1)
-		  AND ($2='' OR acuerdo_marco ILIKE $2)
-		  AND ($3='' OR catalogo ILIKE $3)
-		GROUP BY departamento ORDER BY SUM(nro_ordenes) DESC LIMIT 25`,
+		SELECT COALESCE(datos_raw->>'department', 'Sin departamento') AS nombre,
+		       COUNT(*)::INTEGER AS ordenes,
+		       0.0::FLOAT AS monto
+		FROM fichas
+		WHERE deleted_at IS NULL
+		  AND estado != 'eliminada'
+		  AND datos_raw->>'department' IS NOT NULL
+		  AND datos_raw->>'department' != ''
+		  AND ($1='' OR datos_raw->>'department' ILIKE $1)
+		  AND ($2='' OR acuerdo ILIKE $2)
+		  AND ($3='' OR datos_raw->>'catalogue' ILIKE $3)
+		GROUP BY datos_raw->>'department'
+		ORDER BY COUNT(*) DESC LIMIT 25`,
 		f.Departamento, f.AcuerdoMarco, f.Catalogo)
 	if err != nil {
 		return nil, fmt.Errorf("departamentos query: %w", err)
@@ -219,11 +223,11 @@ func (r *Repository) queryDashboardData(ctx context.Context, f models.DashboardF
 		FROM fichas WHERE deleted_at IS NULL AND estado != 'eliminada'`)
 	_ = fo.Scan(&opts.Anios, &opts.AcuerdosMarco, &opts.Catalogos, &opts.TiposCompra, &opts.Categorias)
 
-	// departamentos come from contrataciones (different table)
+	// departamentos come from fichas datos_raw (populated by crawler with CEAM_DEPARTMENTS)
 	_ = r.pool.QueryRow(ctx, `
-		SELECT ARRAY_AGG(DISTINCT departamento ORDER BY departamento)
-		       FILTER (WHERE departamento IS NOT NULL AND departamento != '')
-		FROM contrataciones`).Scan(&opts.Departamentos)
+		SELECT ARRAY_AGG(DISTINCT datos_raw->>'department' ORDER BY datos_raw->>'department')
+		       FILTER (WHERE datos_raw->>'department' IS NOT NULL AND datos_raw->>'department' != '')
+		FROM fichas WHERE deleted_at IS NULL AND estado != 'eliminada'`).Scan(&opts.Departamentos)
 	data.FilterOptions = opts
 
 	return data, nil

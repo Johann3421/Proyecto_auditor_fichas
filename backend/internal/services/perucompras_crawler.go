@@ -109,6 +109,18 @@ func (c *PeruComprasCrawler) ScrapeAllCatalogs(ctx context.Context) error {
 	log.Printf("[Crawler] %d/%d acuerdos seleccionados para scraping", len(targeted), len(agreements))
 	agreements = targeted
 
+	// departments to crawl; empty string = no department filter (scrape all)
+	departments := []string{""}
+	if v := os.Getenv("CEAM_DEPARTMENTS"); v != "" {
+		for _, d := range strings.Split(v, ",") {
+			if t := strings.TrimSpace(d); t != "" {
+				departments = append(departments, t)
+			}
+		}
+		departments = departments[1:] // drop the empty-string placeholder
+		log.Printf("[Crawler] Filtrando por departamentos: %v", departments)
+	}
+
 	totalFichas := 0
 	for _, ag := range agreements {
 		select {
@@ -117,11 +129,13 @@ func (c *PeruComprasCrawler) ScrapeAllCatalogs(ctx context.Context) error {
 		default:
 		}
 
-		n, err := c.scrapeAgreement(ctx, csrfToken, ag, maxPages)
-		if err != nil {
-			log.Printf("[Crawler] error en acuerdo %s: %v", ag.Code, err)
-		} else {
-			totalFichas += n
+		for _, dept := range departments {
+			n, err := c.scrapeAgreement(ctx, csrfToken, ag, dept, maxPages)
+			if err != nil {
+				log.Printf("[Crawler] error en acuerdo %s (dept=%q): %v", ag.Code, dept, err)
+			} else {
+				totalFichas += n
+			}
 		}
 
 		// Refresh token and cookies between agreements to avoid session expiry.
@@ -198,12 +212,13 @@ func parseAgreements(body string) []agreementInfo {
 }
 
 // scrapeAgreement paginates through one agreement's product list.
-func (c *PeruComprasCrawler) scrapeAgreement(ctx context.Context, csrfToken string, ag agreementInfo, maxPages int) (int, error) {
+// department is optional; when non-empty only products available in that delivery region are fetched.
+func (c *PeruComprasCrawler) scrapeAgreement(ctx context.Context, csrfToken string, ag agreementInfo, department string, maxPages int) (int, error) {
 	desc := ag.Description
 	if len(desc) > 35 {
 		desc = desc[:35] + "…"
 	}
-	log.Printf("[Crawler] Acuerdo %s — %s", ag.Code, desc)
+	log.Printf("[Crawler] Acuerdo %s — %s (dept=%q)", ag.Code, desc, department)
 
 	total := 0
 	for page := 1; ; page++ {
@@ -216,12 +231,12 @@ func (c *PeruComprasCrawler) scrapeAgreement(ctx context.Context, csrfToken stri
 		default:
 		}
 
-		pageHTML, hasNext, err := c.fetchProductPage(csrfToken, ag.FilterValue, page)
+		pageHTML, hasNext, err := c.fetchProductPage(csrfToken, ag.FilterValue, department, page)
 		if err != nil {
 			return total, fmt.Errorf("pág %d: %w", page, err)
 		}
 
-		fichas := parseProductCards(pageHTML, ag.Code, ag.Description)
+		fichas := parseProductCards(pageHTML, ag.Code, ag.Description, department)
 		for _, f := range fichas {
 			fCopy := f
 			if err := c.repo.UpsertFicha(ctx, &fCopy); err != nil {
@@ -239,14 +254,31 @@ func (c *PeruComprasCrawler) scrapeAgreement(ctx context.Context, csrfToken stri
 }
 
 // fetchProductPage submits the search form for a specific agreement page.
-func (c *PeruComprasCrawler) fetchProductPage(csrfToken, filterValue string, page int) (string, bool, error) {
+// department is optional; when non-empty it adds a ClientFilter.Department=["DEPT"] param.
+func (c *PeruComprasCrawler) fetchProductPage(csrfToken, filterValue, department string, page int) (string, bool, error) {
 	filterJSON := `["` + strings.ReplaceAll(filterValue, `"`, `\"`) + `"]`
 
+	deptJSON := "[]"
+	if department != "" {
+		deptJSON = `["` + strings.ReplaceAll(department, `"`, `\"`) + `"]`
+	}
+
 	formValues := fmt.Sprintf(
-		"__RequestVerificationToken=%s&Status=VIGENTE&Pagination.Page=%d&Pagination.LeftMostPage=1&Pagination.Paging=%d&ClientFilter.Feature=%%5B%%5D&ClientFilter.Agreement=%s&ClientFilter.Catalogue=&ClientFilter.Category=&ServerFilter.Agreement=&ServerFilter.Catalogue=&ServerFilter.Category=&SearchText=",
+		"__RequestVerificationToken=%s"+
+			"&DownloadId=&IsDownload=False&From=Result&IsNewSearch=False"+
+			"&SearchTextPrevious=&Status=VIGENTE"+
+			"&Pagination.Page=%d&Pagination.Paging=%d&Pagination.LeftMostPage=1"+
+			"&ClientFilter.Agreement=%s"+
+			"&ClientFilter.Catalogue=&ClientFilter.Category=&ClientFilter.Feature="+
+			"&ClientFilter.Department=%s"+
+			"&ServerFilter.Agreement=&ServerFilter.Catalogue=%%5B%%5D"+
+			"&ServerFilter.Category=%%5B%%5D"+
+			"&ServerFilter.Feature=&ServerFilter.Department=%%5B%%5D"+
+			"&SearchText=",
 		urlEncode(csrfToken),
 		page, page,
 		urlEncode(filterJSON),
+		urlEncode(deptJSON),
 	)
 
 	req, err := http.NewRequest(http.MethodPost, catalogBaseURL+"/", strings.NewReader(formValues))
@@ -288,7 +320,7 @@ func urlEncode(s string) string {
 }
 
 // parseProductCards extracts Ficha objects from a search result HTML page.
-func parseProductCards(body, acuerdoCode, acuerdoDesc string) []models.Ficha {
+func parseProductCards(body, acuerdoCode, acuerdoDesc, department string) []models.Ficha {
 	reH4 := regexp.MustCompile(`card-title-custom[^>]*>\s*([^\n<]+?)\s*</h4>`)
 	reID := regexp.MustCompile(`<a[^>]*id="(\d+)"[^>]*class="enlace-detalles`)
 	reAttr := func(name string) *regexp.Regexp {
@@ -364,6 +396,9 @@ func parseProductCards(body, acuerdoCode, acuerdoDesc string) []models.Ficha {
 			"acuerdo_desc":   acuerdoDesc,
 			"published_date": pubDate,
 			"status_raw":     statusStr,
+		}
+		if department != "" {
+			datosRaw["department"] = department
 		}
 
 		// Parse DD/MM/YYYY → time.Time for published_at column.

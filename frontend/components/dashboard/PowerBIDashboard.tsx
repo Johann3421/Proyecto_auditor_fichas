@@ -271,7 +271,7 @@ export default function PowerBIDashboard() {
           </section>
 
           <section className="col-span-12 lg:col-span-4 bg-white p-3 rounded shadow">
-            <h3 className="text-xs text-center text-[#004696] font-semibold">Órdenes por Región / Departamento</h3>
+            <h3 className="text-xs text-center text-[#004696] font-semibold">Fichas por Departamento de Entrega</h3>
             <div className="h-44 mt-2">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={deptos} layout="vertical" margin={{ left: 4, right: 16 }}>
