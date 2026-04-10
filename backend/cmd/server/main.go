@@ -71,6 +71,7 @@ func main() {
 		r.Get("/api/v1/notificaciones", handlers.NotificacionesHandler)
 		r.Get("/api/v1/reportes", handlers.ReportesHandler)
 		r.Post("/api/v1/sync/manual", handlers.SyncHandler)
+		r.Post("/api/v1/contrataciones/import", handlers.ContratacionesImportHandler)
 	})
 
 	// 4. Iniciar Servidor

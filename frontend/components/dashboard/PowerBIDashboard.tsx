@@ -55,8 +55,8 @@ function exportToExcel(data: DashboardData) {
     }))), "Por Período");
   XLSX.utils.book_append_sheet(wb,
     XLSX.utils.json_to_sheet(data.departamentos.map(r => ({
-      "Acuerdo Marco": r.nombre, "Fichas": r.ordenes,
-    }))), "Por Acuerdo");
+      "Región": r.nombre, "Órdenes": r.ordenes, "Monto": r.monto,
+    }))), "Por Región");
   XLSX.utils.book_append_sheet(wb,
     XLSX.utils.json_to_sheet(data.tipos_compra.map(r => ({
       "Estado": r.tipo, "Fichas": r.monto,
@@ -94,7 +94,7 @@ function TreemapCell(props: any) {
 // ── Main component ──────────────────────────────────────────────────────────────
 export default function PowerBIDashboard() {
   const [filters, setFilters] = useState<Record<string, string>>({
-    anio: "", catalogo: "", categoria: "", acuerdo_marco: "", tipo_compra: "",
+    anio: "", catalogo: "", categoria: "", departamento: "", acuerdo_marco: "", tipo_compra: "",
   });
 
   const { data, isLoading } = useQuery<DashboardData>({
@@ -114,7 +114,7 @@ export default function PowerBIDashboard() {
   };
 
   function setFilter(k: string, v: string) { setFilters(prev => ({ ...prev, [k]: v })); }
-  function resetFilters() { setFilters({ anio: "", catalogo: "", categoria: "", acuerdo_marco: "", tipo_compra: "" }); }
+  function resetFilters() { setFilters({ anio: "", catalogo: "", categoria: "", departamento: "", acuerdo_marco: "", tipo_compra: "" }); }
 
   const colDefs: ColDef[] = useMemo(() => [
     { headerName: "Catálogo", field: "catalogo", flex: 3, filter: true },
@@ -166,6 +166,7 @@ export default function PowerBIDashboard() {
           <SelectFilter label="Año"           value={filters.anio}          onChange={v => setFilter("anio", v)}          options={opts.anios} />
           <SelectFilter label="Catálogo"      value={filters.catalogo}      onChange={v => setFilter("catalogo", v)}      options={opts.catalogos} />
           <SelectFilter label="Categoría"     value={filters.categoria}     onChange={v => setFilter("categoria", v)}     options={opts.categorias} />
+          <SelectFilter label="Región"         value={filters.departamento}  onChange={v => setFilter("departamento", v)}  options={opts.departamentos} />
           <SelectFilter label="Acuerdo Marco"  value={filters.acuerdo_marco} onChange={v => setFilter("acuerdo_marco", v)} options={opts.acuerdos_marco} />
           <SelectFilter label="Estado"         value={filters.tipo_compra}   onChange={v => setFilter("tipo_compra", v)}   options={opts.tipos_compra} />
           <div className="pt-3 border-t space-y-1">
@@ -270,7 +271,7 @@ export default function PowerBIDashboard() {
           </section>
 
           <section className="col-span-12 lg:col-span-4 bg-white p-3 rounded shadow">
-            <h3 className="text-xs text-center text-[#004696] font-semibold">Fichas por Acuerdo Marco</h3>
+            <h3 className="text-xs text-center text-[#004696] font-semibold">Órdenes por Región / Departamento</h3>
             <div className="h-44 mt-2">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={deptos} layout="vertical" margin={{ left: 4, right: 16 }}>
